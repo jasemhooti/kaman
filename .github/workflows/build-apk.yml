@@ -17,12 +17,81 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies & Build Offline 3D Bundle
+      - name: Prepare Offline 3D Bundle & Launcher Icons
         run: |
-          npm install
-          npm run build
-          mkdir -p android/app/src/main/assets/www
-          cp -r dist/* android/app/src/main/assets/www/
+          # 1. If pre-bundled standalone index.html is not present, build it with public npm registry versions
+          if [ ! -f "android/app/src/main/assets/www/index.html" ]; then
+            echo "Building standalone 3D bundle from source..."
+            rm -f package-lock.json
+            npm pkg set dependencies.vite="^6.2.0" \
+                        dependencies.@vitejs/plugin-react="^4.3.4" \
+                        dependencies.@tailwindcss/vite="^4.0.9" \
+                        dependencies.tailwindcss="^4.0.9" \
+                        devDependencies.tailwindcss="^4.0.9" \
+                        devDependencies.typescript="^5.7.3"
+            npm pkg delete dependencies.@google/genai
+            npm install --legacy-peer-deps
+            npm run build
+            mkdir -p android/app/src/main/assets/www
+            node -e '
+              const fs = require("fs");
+              const path = require("path");
+              const files = fs.readdirSync("dist/assets");
+              const css = fs.readFileSync(path.join("dist/assets", files.find(f => f.endsWith(".css"))), "utf8");
+              const js = fs.readFileSync(path.join("dist/assets", files.find(f => f.endsWith(".js"))), "utf8").replace(/<\/script>/gi, "<\\/script>");
+              const html = `<!doctype html><html lang="fa" dir="rtl" class="dark"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/><title>Kaman Duel 3D</title><style>${css}</style></head><body class="bg-[#0c1017] text-[#f4efe6] overflow-hidden select-none" data-state="title"><div id="root"></div><script type="module">${js}</script></body></html>`;
+              fs.writeFileSync("android/app/src/main/assets/www/index.html", html, "utf8");
+            '
+          fi
+
+          # 2. Ensure valid PNG launcher icons exist in all mipmap folders
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const zlib = require("zlib");
+            function makePng(w, h) {
+              const sig = Buffer.from([137,80,78,71,13,10,26,10]);
+              function crc32(buf) {
+                let c = -1;
+                for (let i = 0; i < buf.length; i++) {
+                  c ^= buf[i];
+                  for (let j = 0; j < 8; j++) c = (c >>> 1) ^ (c & 1 ? 0xedb88320 : 0);
+                }
+                return (c ^ -1) >>> 0;
+              }
+              function chunk(type, data) {
+                const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+                const t = Buffer.from(type);
+                const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([t, data])), 0);
+                return Buffer.concat([len, t, data, crc]);
+              }
+              const ihdr = Buffer.alloc(13);
+              ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+              ihdr[8] = 8; ihdr[9] = 6;
+              const raw = Buffer.alloc((w * 4 + 1) * h);
+              for (let y = 0; y < h; y++) {
+                const row = y * (w * 4 + 1);
+                raw[row] = 0;
+                for (let x = 0; x < w; x++) {
+                  const p = row + 1 + x * 4;
+                  const dx = (x - w/2) / (w/2), dy = (y - h/2) / (h/2);
+                  const r = Math.sqrt(dx*dx + dy*dy);
+                  const isRing = Math.abs(r - 0.65) < 0.08;
+                  raw[p] = isRing ? 245 : 12;
+                  raw[p+1] = isRing ? 158 : 16;
+                  raw[p+2] = isRing ? 11 : 23;
+                  raw[p+3] = 255;
+                }
+              }
+              return Buffer.concat([sig, chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+            }
+            const png = makePng(192, 192);
+            for (const d of ["mipmap-mdpi", "mipmap-hdpi", "mipmap-xhdpi", "mipmap-xxhdpi", "mipmap-xxxhdpi"]) {
+              const dir = path.join("android/app/src/main/res", d);
+              fs.mkdirSync(dir, { recursive: true });
+              fs.writeFileSync(path.join(dir, "ic_launcher.png"), png);
+            }
+          '
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -30,15 +99,19 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle
+      - name: Setup Gradle 8.5
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
 
       - name: Compile Standalone Offline APK (Release & Debug)
         working-directory: ./android
-        run: gradle assembleRelease assembleDebug
+        run: gradle assembleRelease assembleDebug --stacktrace
 
       - name: Upload Ready-to-Install KamanDuel3D.apk
         uses: actions/upload-artifact@v4
         with:
           name: KamanDuel3D-Standalone-Offline-APK
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/apk/debug/app-debug.apk
