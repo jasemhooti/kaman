@@ -1,0 +1,6 @@
+{
+  "name": "Kaman Duel 3D — نبرد کمانداران",
+  "description": "بازی مبارزه‌ای نوبتی سه‌بعدی کمانداران با فیزیک بالستیک، باد داینامیک، هوش مصنوعی سه سطحی و قابلیت نصب اندروید (APK/PWA)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
