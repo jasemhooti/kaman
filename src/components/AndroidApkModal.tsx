@@ -11,9 +11,8 @@ export const AndroidApkModal: React.FC<AndroidApkModalProps> = ({ isOpen, onClos
 
   if (!isOpen) return null;
 
-  const manifestSnippet = `<!-- AndroidManifest.xml (بدون هیچ‌گونه دسترسی اینترنت یا سرور) -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.kamanduel.bow3d">
+  const manifestSnippet = `<!-- AndroidManifest.xml (بدون هیچ‌گونه دسترسی اینترنت یا سرور - حالت عمودی) -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- ZERO INTERNET PERMISSION: 100% Offline Standalone APK -->
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <application
@@ -22,7 +21,7 @@ export const AndroidApkModal: React.FC<AndroidApkModalProps> = ({ isOpen, onClos
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
         <activity
             android:name=".MainActivity"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="portrait"
             android:exported="true">
             <!-- Loads directly from file:///android_asset/www/index.html -->
         </activity>

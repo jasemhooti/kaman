@@ -525,17 +525,17 @@ export default function App() {
       {/* STAGE 1: TITLE SCREEN OVERLAY */}
       {appState === 'title' && (
         <div
-          className="fixed inset-0 z-20 flex flex-col justify-between p-6 sm:p-10 pointer-events-none"
+          className="fixed inset-0 z-20 flex flex-col justify-between p-4 sm:p-10 pointer-events-none"
           style={{
             background:
-              'linear-gradient(270deg, rgba(8,11,18,0.82) 0%, rgba(8,11,18,0.45) 42%, rgba(8,11,18,0.0) 75%)',
+              'linear-gradient(180deg, rgba(8,11,18,0.75) 0%, rgba(8,11,18,0.35) 45%, rgba(8,11,18,0.85) 100%)',
           }}
         >
-          {/* Top-Left / Right Negative Space Title Lockup & Configuration */}
-          <div className="my-auto max-w-xl w-full pointer-events-auto space-y-5">
+          {/* Portrait & Desktop Responsive Title Lockup & Configuration */}
+          <div className="my-auto max-w-xl w-full mx-auto lg:mx-0 pointer-events-auto space-y-4 sm:space-y-5">
             {/* Custom Inline SVG Title Lockup Emblem */}
-            <div className="flex items-center gap-4">
-              <svg className="w-16 h-16 sm:w-20 sm:h-20 shrink-0" viewBox="0 0 120 120">
+            <div className="flex items-center gap-3.5 sm:gap-4">
+              <svg className="w-14 h-14 sm:w-20 sm:h-20 shrink-0" viewBox="0 0 120 120">
                 <defs>
                   <linearGradient id="crestGold" x1="0%" y1="0%" x2="100%" y2="100%">
                     <stop offset="0%" stopColor="#fde68a" />
@@ -565,44 +565,44 @@ export default function App() {
               </svg>
 
               <div>
-                <h1 className="font-display text-3xl sm:text-5xl font-extrabold tracking-tight text-white stroke-text">
+                <h1 className="font-display text-2xl sm:text-5xl font-extrabold tracking-tight text-white stroke-text">
                   نبرد کمانداران
                 </h1>
-                <p className="font-display text-xs sm:text-sm font-semibold tracking-widest text-amber-400 mt-1">
-                  KAMAN DUEL 3D · BALLISTIC ARCHERY ARENA
+                <p className="font-display text-[11px] sm:text-sm font-semibold tracking-widest text-amber-400 mt-0.5">
+                  KAMAN DUEL 3D · HD PORTRAIT & LANDSCAPE
                 </p>
               </div>
             </div>
 
             {/* Mode & AI Difficulty Controls */}
-            <div className="rounded-2xl border border-white/15 bg-[#0c1017]/90 p-4 sm:p-5 space-y-4 shadow-2xl">
+            <div className="rounded-2xl border border-white/15 bg-[#0c1017]/90 p-3.5 sm:p-5 space-y-3.5 sm:space-y-4 shadow-2xl">
               {/* Game Mode Selector */}
               <div>
-                <span className="block text-xs font-bold text-slate-300 mb-2">
+                <span className="block text-xs font-bold text-slate-300 mb-1.5">
                   حالت بازی (Game Mode):
                 </span>
-                <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-[#070a0f] border border-white/10">
+                <div className="grid grid-cols-2 gap-1.5 sm:gap-2 p-1 rounded-xl bg-[#070a0f] border border-white/10">
                   <button
                     type="button"
                     onClick={() => setGameMode('1p')}
-                    className={`rounded-lg py-2 px-3 text-xs sm:text-sm font-bold transition-colors whitespace-nowrap ${
+                    className={`rounded-lg py-2 px-2 text-xs sm:text-sm font-bold transition-colors whitespace-nowrap ${
                       gameMode === '1p'
                         ? 'bg-amber-500 text-slate-950 shadow'
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    تک‌نفره با هوش مصنوعی (PvE)
+                    تک‌نفره با هوش مصنوعی
                   </button>
                   <button
                     type="button"
                     onClick={() => setGameMode('2p')}
-                    className={`rounded-lg py-2 px-3 text-xs sm:text-sm font-bold transition-colors whitespace-nowrap ${
+                    className={`rounded-lg py-2 px-2 text-xs sm:text-sm font-bold transition-colors whitespace-nowrap ${
                       gameMode === '2p'
                         ? 'bg-amber-500 text-slate-950 shadow'
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    دونفره روی یک دستگاه (2P Local)
+                    دونفره روی یک گوشی
                   </button>
                 </div>
               </div>
@@ -610,42 +610,42 @@ export default function App() {
               {/* AI Difficulty Selector (shown when 1P is active) */}
               {gameMode === '1p' && (
                 <div>
-                  <span className="block text-xs font-bold text-slate-300 mb-2">
+                  <span className="block text-xs font-bold text-slate-300 mb-1.5">
                     سطح هوش مصنوعی (AI Difficulty):
                   </span>
-                  <div className="grid grid-cols-3 gap-2 p-1 rounded-xl bg-[#070a0f] border border-white/10">
+                  <div className="grid grid-cols-3 gap-1.5 sm:gap-2 p-1 rounded-xl bg-[#070a0f] border border-white/10">
                     <button
                       type="button"
                       onClick={() => setAiDifficulty('easy')}
-                      className={`rounded-lg py-2 px-2 text-xs font-bold transition-colors whitespace-nowrap ${
+                      className={`rounded-lg py-2 px-1.5 text-[11px] sm:text-xs font-bold transition-colors whitespace-nowrap ${
                         aiDifficulty === 'easy'
                           ? 'bg-emerald-500 text-slate-950'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
-                      آسان (±15° خطا)
+                      آسان (±15°)
                     </button>
                     <button
                       type="button"
                       onClick={() => setAiDifficulty('medium')}
-                      className={`rounded-lg py-2 px-2 text-xs font-bold transition-colors whitespace-nowrap ${
+                      className={`rounded-lg py-2 px-1.5 text-[11px] sm:text-xs font-bold transition-colors whitespace-nowrap ${
                         aiDifficulty === 'medium'
                           ? 'bg-amber-400 text-slate-950'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
-                      متوسط (±6° تطبیقی)
+                      متوسط (±6°)
                     </button>
                     <button
                       type="button"
                       onClick={() => setAiDifficulty('hard')}
-                      className={`rounded-lg py-2 px-2 text-xs font-bold transition-colors whitespace-nowrap ${
+                      className={`rounded-lg py-2 px-1.5 text-[11px] sm:text-xs font-bold transition-colors whitespace-nowrap ${
                         aiDifficulty === 'hard'
                           ? 'bg-rose-500 text-white'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
-                      سخت (بالستیک دقیق)
+                      سخت (دقیق)
                     </button>
                   </div>
                 </div>
@@ -653,36 +653,36 @@ export default function App() {
 
               {/* Weather / Wind Condition Selector */}
               <div>
-                <span className="block text-xs font-bold text-slate-300 mb-2">
+                <span className="block text-xs font-bold text-slate-300 mb-1.5">
                   شرایط آب‌وهوا و باد (Weather & Wind):
                 </span>
-                <div className="grid grid-cols-3 gap-2 p-1 rounded-xl bg-[#070a0f] border border-white/10">
+                <div className="grid grid-cols-3 gap-1.5 sm:gap-2 p-1 rounded-xl bg-[#070a0f] border border-white/10">
                   <button
                     type="button"
                     onClick={() => setWeather('clear')}
-                    className={`rounded-lg py-1.5 px-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+                    className={`rounded-lg py-1.5 px-1.5 text-[11px] sm:text-xs font-semibold transition-colors whitespace-nowrap ${
                       weather === 'clear'
                         ? 'bg-sky-500 text-slate-950 font-bold'
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    صاف و نسیم ملایم
+                    صاف و نسیم
                   </button>
                   <button
                     type="button"
                     onClick={() => setWeather('dust')}
-                    className={`rounded-lg py-1.5 px-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+                    className={`rounded-lg py-1.5 px-1.5 text-[11px] sm:text-xs font-semibold transition-colors whitespace-nowrap ${
                       weather === 'dust'
                         ? 'bg-amber-500 text-slate-950 font-bold'
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    طوفان گرد و غبار
+                    طوفان غبار
                   </button>
                   <button
                     type="button"
                     onClick={() => setWeather('rain')}
-                    className={`rounded-lg py-1.5 px-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+                    className={`rounded-lg py-1.5 px-1.5 text-[11px] sm:text-xs font-semibold transition-colors whitespace-nowrap ${
                       weather === 'rain'
                         ? 'bg-indigo-500 text-white font-bold'
                         : 'text-slate-300 hover:text-white'
@@ -694,19 +694,19 @@ export default function App() {
               </div>
 
               {/* Primary CTA & Android APK Export CTA */}
-              <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <div className="pt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
                 <button
                   type="button"
                   data-start="true"
                   onClick={() => startMatch()}
-                  className="flex-1 rounded-xl bg-amber-500 py-3.5 px-6 text-base font-extrabold text-slate-950 shadow-lg hover:bg-amber-400 active:scale-[0.99] transition-all whitespace-nowrap"
+                  className="flex-1 rounded-xl bg-amber-500 py-3 sm:py-3.5 px-5 text-sm sm:text-base font-extrabold text-slate-950 shadow-lg hover:bg-amber-400 active:scale-[0.99] transition-all whitespace-nowrap"
                 >
-                  شروع نبرد کمانداران [Enter / Space]
+                  شروع نبرد کمانداران
                 </button>
                 <button
                   type="button"
                   onClick={() => setApkModalOpen(true)}
-                  className="rounded-xl border border-amber-500/40 bg-amber-500/10 py-3.5 px-4 text-xs sm:text-sm font-bold text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap"
+                  className="rounded-xl border border-amber-500/40 bg-amber-500/10 py-2.5 sm:py-3.5 px-4 text-xs sm:text-sm font-bold text-amber-300 hover:bg-amber-500/20 transition-colors whitespace-nowrap"
                 >
                   خروجی اندروید (APK)
                 </button>
@@ -715,8 +715,8 @@ export default function App() {
           </div>
 
           {/* Single Flat Borderless Control-Hint Line in Bottom Safe Margin */}
-          <div className="w-full text-center text-xs text-slate-300 pointer-events-none">
-            کشیدن موس یا انگشت روی صحنه برای تنظیم زاویه و قدرت · کلیدهای جهت‌نما تنظیم دقیق · Space رها کردن تیر · C تغییر زاویه دوربین · P توقف
+          <div className="w-full text-center text-[11px] sm:text-xs text-slate-300 pointer-events-none">
+            کشیدن انگشت روی صحنه برای تنظیم زاویه و قدرت · بهینه‌شده برای حالت عمودی گوشی (Portrait 3D)
           </div>
         </div>
       )}
