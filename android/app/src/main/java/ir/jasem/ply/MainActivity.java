@@ -1,4 +1,4 @@
-package com.kamanduel.bow3d;
+package ir.jasem.ply;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
@@ -13,11 +13,12 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 /**
- * 100% Offline Standalone Android Activity for Kaman Duel 3D.
- * Loads the compiled Three.js + WebGL + WebAudio game directly from internal APK assets
- * (file:///android_asset/www/index.html) with ZERO server, ZERO backend, and ZERO internet access.
+ * Standalone 100% Offline Native Android Activity for "جنگ تانک ها" (ir.jasem.ply).
+ * Loads the complete 3D WebGL + WebAudio engine directly from internal APK assets:
+ * file:///android_asset/www/index.html (Zero server, Zero internet required).
  */
 public class MainActivity extends Activity {
+
     private WebView webView;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -30,29 +31,26 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN
         );
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemUI();
 
         webView = new WebView(this);
-        webView.setBackgroundColor(0xFF0C1017);
+        setContentView(webView);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
         settings.setAllowFileAccessFromFileURLs(true);
         settings.setAllowUniversalAccessFromFileURLs(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
 
-        webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebViewClient(new WebViewClient());
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-        setContentView(webView);
-
-        // Load 100% locally bundled game from APK internal assets (No server or internet needed)
         webView.loadUrl("file:///android_asset/www/index.html");
     }
 

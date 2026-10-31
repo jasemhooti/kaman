@@ -3,24 +3,36 @@ plugins {
 }
 
 android {
-    namespace "com.kamanduel.bow3d"
+    namespace 'ir.jasem.ply'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.kamanduel.bow3d"
+        applicationId "ir.jasem.ply"
         minSdk 24
         targetSdk 34
         versionCode 1
         versionName "1.0.0"
     }
 
+    signingConfigs {
+        release {
+            storeFile file("release-key.jks")
+            storePassword "jasem123456"
+            keyAlias "jasem_key"
+            keyPassword "jasem123456"
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            shrinkResources false
+            signingConfig signingConfigs.release
         }
         debug {
-            debuggable true
+            signingConfig signingConfigs.release
         }
     }
 
@@ -28,7 +40,4 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-}
-
-dependencies {
 }

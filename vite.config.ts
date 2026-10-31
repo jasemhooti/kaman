@@ -15,13 +15,13 @@ export default defineConfig(() => {
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
           id: '/',
-          name: 'Kaman Duel 3D — نبرد کمانداران',
-          short_name: 'KamanDuel',
-          description: 'بازی مبارزه‌ای نوبتی سه‌بعدی کمانداران با فیزیک بالستیک و باد داینامیک',
+          name: 'جنگ تانک ها',
+          short_name: 'جنگ تانک ها',
+          description: 'بازی مبارزه‌ای نوبتی سه‌بعدی جنگ تانک‌ها با گاراژ ۱۰ تانک و فروشگاه گلوله (ir.jasem.ply)',
           theme_color: '#0c1017',
           background_color: '#0c1017',
           display: 'fullscreen',
-          orientation: 'portrait',
+          orientation: 'any',
           start_url: '/',
           scope: '/',
           icons: [

@@ -1,69 +1,69 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
-  computeTrajectoryPreview,
-  evaluateSegmentCollision,
-  getBowLaunchOrigin,
-  powerToSpeed,
-  stepArrowPhysics,
+  TRAJECTORY_PREVIEW_MAX_METERS,
+  computeShortTrajectoryPreview,
+  evaluatePointCollision,
+  getTankMuzzleOrigin,
+  powerToMuzzleVelocity,
+  stepProjectile,
   terrainHeightAt,
-  type ArenaConfig,
-  type ArcherState,
+  terrainSlopeAt,
+  type BattlefieldConfig,
+  type CameraPreset,
   type HitDetectionResult,
-  type WeatherType,
+  type TankCombatState,
 } from './physics';
 import {
-  createArrowMesh,
-  createCloudCluster,
-  createCompositeArcher,
-  createCompositeObstacle,
-  createProceduralGrainTexture,
-  createSkyDome,
-  createTorchBrazier,
-  createWarBanner,
-  detectSoftwareWebGL,
-  stepRagdollPhysics,
-  triggerArcherRagdoll,
-  updateArcherPose,
-  type ArcherRig,
+  createBiomeSkyDome,
+  createObstacleRig,
+  createProceduralTexture,
+  createShellMesh,
+  createSupplyCrateMesh,
+  createTankRig,
+  stepFlyingTurret,
+  triggerTankExplosion,
+  updateTankPose,
+  type CrateRig,
   type ObstacleRig,
+  type TankRig,
 } from './scene3d';
 import { soundEngine } from './sound';
-
-export type CameraViewMode = 'auto' | 'overview' | 'focus';
 
 export interface ActiveShotTrigger {
   shotId: number;
   shooterId: 1 | 2;
-  angleDeg: number;
+  barrelAngleDeg: number;
   powerPct: number;
+  turretYawRad: number;
 }
 
-export interface ArenaCanvasProps {
-  appState: 'title' | 'playing' | 'paused' | 'gameover';
-  arena: ArenaConfig;
-  archers: [ArcherState, ArcherState];
+interface ArenaCanvasProps {
+  appState: 'garage' | 'shop' | 'playing' | 'paused' | 'gameover';
+  arena: BattlefieldConfig;
+  tanks: [TankCombatState, TankCombatState];
   currentTurn: 1 | 2;
   windSpeed: number;
-  weather: WeatherType;
-  cameraMode: CameraViewMode;
-  cinematicFollow: boolean;
+  cameraPreset: CameraPreset;
   isAITurn: boolean;
   shotTrigger: ActiveShotTrigger | null;
   onAimChange: (angleDeg: number, powerPct: number) => void;
-  onDragFire: () => void;
   onShotResolved: (result: HitDetectionResult, landingX: number) => void;
 }
 
-const _camTargetPos = new THREE.Vector3();
-const _camLookTarget = new THREE.Vector3();
-const _mat4 = new THREE.Matrix4();
-const _posVec = new THREE.Vector3();
-const _scaleVec = new THREE.Vector3();
-const _quat = new THREE.Quaternion();
-const _euler = new THREE.Euler();
-const _color = new THREE.Color();
+function detectSoftwareWebGL(): boolean {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (!gl) return false;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const r = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+    return /SwiftShader|llvmpipe|Software|Microsoft Basic Render/i.test(r);
+  } catch {
+    return false;
+  }
+}
 
 interface PooledParticle {
   active: boolean;
@@ -85,10 +85,10 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
   propsRef.current = props;
 
   const lastShotIdRef = useRef<number>(0);
-  const rebuildSceneArenaRef = useRef<((arena: ArenaConfig, archers: [ArcherState, ArcherState]) => void) | null>(
-    null
-  );
-  const launchArrowInternalRef = useRef<((trigger: ActiveShotTrigger) => void) | null>(null);
+  const rebuildSceneArenaRef = useRef<
+    ((arena: BattlefieldConfig, tanks: [TankCombatState, TankCombatState]) => void) | null
+  >(null);
+  const launchShellInternalRef = useRef<((trigger: ActiveShotTrigger) => void) | null>(null);
 
   useEffect(() => {
     const container = mountRef.current;
@@ -102,47 +102,47 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.18;
+    renderer.toneMappingExposure = 1.15;
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
     const initW = container.clientWidth || window.innerWidth;
     const initH = container.clientHeight || window.innerHeight;
     renderer.setSize(initW, initH);
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    const fogColor = new THREE.Color(0x1e2542);
+    const fogColor = new THREE.Color(0x1e293b);
     scene.background = fogColor;
-    scene.fog = new THREE.FogExp2(0x1e2542, 0.0065);
+    scene.fog = new THREE.FogExp2(0x1e293b, 0.0048);
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     pmremGenerator.dispose();
 
-    // Atmospheric Gradient Sky Dome Shader
-    const { domeGroup, updateSkyWeather } = createSkyDome();
+    const { domeGroup, updateBiomeSky } = createBiomeSkyDome();
     scene.add(domeGroup);
 
     const initAspect = initW / initH;
-    const camera = new THREE.PerspectiveCamera(initAspect < 1 ? 58 : 42, initAspect, 0.5, 320);
-    camera.position.set(-28, 7.5, 5.2);
-    const currentCamLook = new THREE.Vector3(-8, 2.5, 0);
+    const camera = new THREE.PerspectiveCamera(initAspect < 1 ? 56 : 44, initAspect, 0.5, 380);
+    camera.position.set(-34, 8.5, 14);
+    const currentCamLook = new THREE.Vector3(0, 2.5, 0);
     camera.lookAt(currentCamLook);
 
-    // 3-Point Studio & Golden Hour Canyon Lighting Rig
+    // 3-Point Battlefield Lighting Rig
     const hemiLight = new THREE.HemisphereLight(0x93c5fd, 0x452719, 1.05);
-    hemiLight.position.set(0, 55, 0);
+    hemiLight.position.set(0, 65, 0);
     scene.add(hemiLight);
 
-    const keyLight = new THREE.DirectionalLight(0xffe4b5, 2.55);
-    keyLight.position.set(18, 42, 28);
+    const keyLight = new THREE.DirectionalLight(0xffe4b5, 2.5);
+    keyLight.position.set(22, 48, 32);
     if (!isSoftwareGl) {
       keyLight.castShadow = true;
       keyLight.shadow.mapSize.set(1024, 1024);
       keyLight.shadow.camera.near = 5;
-      keyLight.shadow.camera.far = 130;
-      const d = 34;
+      keyLight.shadow.camera.far = 160;
+      const d = 46;
       keyLight.shadow.camera.left = -d;
       keyLight.shadow.camera.right = d;
       keyLight.shadow.camera.top = d;
@@ -152,82 +152,94 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     }
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.95);
-    rimLight.position.set(-28, 22, -24);
+    const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
+    rimLight.position.set(-32, 24, -26);
     scene.add(rimLight);
 
-    // Rich Procedural Textures
-    const terrainTex = createProceduralGrainTexture(renderer, '#9a714c', '#68492e', true, 'terrain');
-    terrainTex.repeat.set(20, 8);
-    const woodTex = createProceduralGrainTexture(renderer, '#854d27', '#4a2511', true, 'wood');
-    const stoneTex = createProceduralGrainTexture(renderer, '#64748b', '#334155', true, 'stone');
+    const concreteTex = createProceduralTexture(renderer, '#64748b', '#475569', 'concrete');
+    const desertTex = createProceduralTexture(renderer, '#b4844e', '#855c31', 'terrain');
+    desertTex.repeat.set(14, 8);
+    const snowTex = createProceduralTexture(renderer, '#e2e8f0', '#94a3b8', 'terrain');
+    snowTex.repeat.set(14, 8);
+    const indTex = createProceduralTexture(renderer, '#475569', '#334155', 'terrain');
+    indTex.repeat.set(14, 8);
+    const volcTex = createProceduralTexture(renderer, '#292524', '#7c2d12', 'terrain');
+    volcTex.repeat.set(14, 8);
 
-    const worldGroup = new THREE.Group();
-    scene.add(worldGroup);
+    const arenaGroup = new THREE.Group();
+    scene.add(arenaGroup);
 
-    let archerRigs: [ArcherRig, ArcherRig] | null = null;
+    let tankRigs: [TankRig, TankRig] | null = null;
     let obstacleRigs: ObstacleRig[] = [];
-    let treeInstancedMesh: THREE.InstancedMesh | null = null;
-    const treeBasePositions: Array<{ x: number; y: number; z: number; scale: number }> = [];
-    const brazierFlames: THREE.Mesh[] = [];
-    const warBannerCloths: THREE.Mesh[] = [];
-    const cloudClusters: Array<{ group: THREE.Group; speedFactor: number }> = [];
+    let crateRigs: CrateRig[] = [];
+    let lastPosX: [number, number] = [0, 0];
 
-    // Dashed Trajectory Preview Line (3 to 5 meters) + Glowing Aim Ring
-    const previewMaxPoints = 32;
-    const previewPositions = new Float32Array(previewMaxPoints * 3);
+    // Direct 3D Dashed Trajectory Line right next to the tank barrel (Strictly 3..5m)
+    const MAX_PREVIEW_VERTS = 44;
+    const previewPositions = new Float32Array(MAX_PREVIEW_VERTS * 3);
     const previewGeo = new THREE.BufferGeometry();
     previewGeo.setAttribute('position', new THREE.BufferAttribute(previewPositions, 3));
     const previewMat = new THREE.LineDashedMaterial({
-      color: 0xfde047,
-      dashSize: 0.3,
-      gapSize: 0.16,
-      transparent: true,
-      opacity: 0.95,
+      color: 0xfbbf24,
+      dashSize: 0.36,
+      gapSize: 0.2,
+      linewidth: 2,
     });
     const previewLine = new THREE.Line(previewGeo, previewMat);
     scene.add(previewLine);
 
-    const previewTipGeo = new THREE.RingGeometry(0.14, 0.26, 20);
+    // Glowing Aim Reticle Ring at the end of the 4.5m trajectory line
+    const previewTipGeo = new THREE.RingGeometry(0.16, 0.3, 18);
     const previewTipMat = new THREE.MeshBasicMaterial({
-      color: 0xfde047,
+      color: 0xfbbf24,
       side: THREE.DoubleSide,
     });
     const previewTipMesh = new THREE.Mesh(previewTipGeo, previewTipMat);
     scene.add(previewTipMesh);
 
-    // Active Flying Arrow Mesh + Glowing Flight Trail Ribbon
-    const flyingArrow = createArrowMesh();
-    flyingArrow.visible = false;
-    scene.add(flyingArrow);
+    // Active Flying Artillery Shell + Glowing Tracer Ribbon
+    let flyingShell = createShellMesh(0xf59e0b);
+    flyingShell.visible = false;
+    scene.add(flyingShell);
 
-    const TRAIL_LENGTH = 20;
+    const TRAIL_LENGTH = 22;
     const trailPositions = new Float32Array(TRAIL_LENGTH * 3);
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
     const trailMat = new THREE.LineBasicMaterial({
       color: 0xfbbf24,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.88,
     });
-    const arrowTrailLine = new THREE.Line(trailGeo, trailMat);
-    arrowTrailLine.visible = false;
-    scene.add(arrowTrailLine);
+    const shellTrailLine = new THREE.Line(trailGeo, trailMat);
+    shellTrailLine.visible = false;
+    scene.add(shellTrailLine);
     const trailHistory: Array<{ x: number; y: number; z: number }> = [];
 
-    const MAX_STUCK_ARROWS = 14;
-    const stuckArrows: THREE.Group[] = [];
+    // Expanding Explosion Shockwave Ring
+    const shockwaveGeo = new THREE.RingGeometry(0.6, 1.1, 24);
+    shockwaveGeo.rotateX(-Math.PI / 2);
+    const shockwaveMat = new THREE.MeshBasicMaterial({
+      color: 0xf97316,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+    });
+    const shockwaveMesh = new THREE.Mesh(shockwaveGeo, shockwaveMat);
+    scene.add(shockwaveMesh);
+    let shockwaveTimer = 0;
 
-    // Zero-GC Pooled Impact Particle Ring Buffer
-    const PARTICLE_COUNT = 72;
-    const particleGeo = new THREE.DodecahedronGeometry(0.13, 0);
+    // Pooled Explosion & Smoke Particle Buffer
+    const PARTICLE_COUNT = 90;
+    const particleGeo = new THREE.DodecahedronGeometry(0.18, 0);
     const particleMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.4,
-      metalness: 0.25,
+      metalness: 0.1,
+      flatShading: true,
     });
     const particleInstanced = new THREE.InstancedMesh(particleGeo, particleMat, PARTICLE_COUNT);
-    particleInstanced.frustumCulled = false;
+    particleInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     scene.add(particleInstanced);
 
     const particlePool: PooledParticle[] = Array.from({ length: PARTICLE_COUNT }, () => ({
@@ -241,281 +253,213 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       life: 0,
       maxLife: 1,
       size: 1,
-      colorHex: 0xfbbf24,
+      colorHex: 0xf97316,
     }));
     let particleCursor = 0;
 
     const spawnParticles = (
-      x: number,
-      y: number,
-      z: number,
+      ox: number,
+      oy: number,
+      oz: number,
       count: number,
       colorHex: number,
-      speedScale = 1
+      speedScale = 1.0,
+      sizeScale = 1.0
     ) => {
       for (let i = 0; i < count; i++) {
         const p = particlePool[particleCursor];
         particleCursor = (particleCursor + 1) % PARTICLE_COUNT;
         p.active = true;
-        p.x = x;
-        p.y = y;
-        p.z = z;
-        const angle = Math.random() * Math.PI * 2;
-        const spd = (1.8 + Math.random() * 5.5) * speedScale;
-        p.vx = Math.cos(angle) * spd;
-        p.vy = (1.6 + Math.random() * 5.0) * speedScale;
-        p.vz = (Math.random() - 0.5) * 4.5 * speedScale;
+        p.x = ox + (Math.random() - 0.5) * 0.5;
+        p.y = oy + (Math.random() - 0.5) * 0.5;
+        p.z = oz + (Math.random() - 0.5) * 0.5;
+        const theta = Math.random() * Math.PI * 2;
+        const speed = (2.2 + Math.random() * 6.5) * speedScale;
+        p.vx = Math.cos(theta) * speed;
+        p.vy = (2.0 + Math.random() * 6.5) * speedScale;
+        p.vz = (Math.random() - 0.5) * 5.0 * speedScale;
         p.life = 0;
-        p.maxLife = 0.42 + Math.random() * 0.45;
-        p.size = 0.7 + Math.random() * 1.15;
+        p.maxLife = 0.45 + Math.random() * 0.55;
+        p.size = (0.7 + Math.random() * 1.1) * sizeScale;
         p.colorHex = colorHex;
       }
     };
 
-    // Weather Wind/Dust/Rain Particle InstancedMesh
-    const WEATHER_COUNT = 140;
-    const weatherGeo = new THREE.BoxGeometry(0.42, 0.045, 0.045);
-    const weatherMat = new THREE.MeshBasicMaterial({
+    const triggerShockwave = (x: number, y: number, z: number, colorHex = 0xf97316) => {
+      shockwaveMesh.position.set(x, y + 0.15, z);
+      shockwaveMesh.scale.set(0.5, 0.5, 0.5);
+      shockwaveMat.color.setHex(colorHex);
+      shockwaveMat.opacity = 0.9;
+      shockwaveTimer = 0.45;
+    };
+
+    // Weather Particle System (Sandstorm, Snowfall, Rain, Volcanic Ash)
+    const WEATHER_COUNT = 130;
+    const weatherPositions = new Float32Array(WEATHER_COUNT * 6);
+    for (let i = 0; i < WEATHER_COUNT; i++) {
+      const wx = (Math.random() - 0.5) * 110;
+      const wy = Math.random() * 28;
+      const wz = (Math.random() - 0.5) * 32;
+      const idx = i * 6;
+      weatherPositions[idx] = wx;
+      weatherPositions[idx + 1] = wy;
+      weatherPositions[idx + 2] = wz;
+      weatherPositions[idx + 3] = wx + 0.7;
+      weatherPositions[idx + 4] = wy;
+      weatherPositions[idx + 5] = wz;
+    }
+    const weatherGeo = new THREE.BufferGeometry();
+    weatherGeo.setAttribute('position', new THREE.BufferAttribute(weatherPositions, 3));
+    const weatherMat = new THREE.LineBasicMaterial({
       color: 0xe2e8f0,
       transparent: true,
-      opacity: 0.48,
+      opacity: 0.45,
     });
-    const weatherInstanced = new THREE.InstancedMesh(weatherGeo, weatherMat, WEATHER_COUNT);
-    weatherInstanced.frustumCulled = false;
-    scene.add(weatherInstanced);
+    const weatherLines = new THREE.LineSegments(weatherGeo, weatherMat);
+    scene.add(weatherLines);
 
-    const weatherParticles = Array.from({ length: WEATHER_COUNT }, (_, i) => ({
-      x: ((i * 19) % 90) - 45,
-      y: ((i * 7) % 26) - 2,
-      z: ((i * 13) % 28) - 15,
-      speedMult: 0.75 + (i % 5) * 0.14,
-    }));
+    // Pre-allocated vectors & matrices for zero-GC render loop
+    const _mat4 = new THREE.Matrix4();
+    const _posVec = new THREE.Vector3();
+    const _scaleVec = new THREE.Vector3();
+    const _quat = new THREE.Quaternion();
+    const _color = new THREE.Color();
+    const _camTargetPos = new THREE.Vector3();
+    const _camLookTarget = new THREE.Vector3();
 
-    // Build / Rebuild Arena Geometry
-    const buildArenaScene = (arena: ArenaConfig, archers: [ArcherState, ArcherState]) => {
-      while (worldGroup.children.length > 0) {
-        const child = worldGroup.children[0];
-        worldGroup.remove(child);
-      }
-      while (stuckArrows.length > 0) {
-        const arr = stuckArrows.pop()!;
-        scene.remove(arr);
-      }
-      if (archerRigs) {
-        for (const rig of archerRigs) {
-          for (const limb of rig.ragdollLimbs) {
-            scene.remove(limb.mesh);
+    // Build / Rebuild 3D Battlefield Terrain, Distant Mountains, Obstacles, Crates, and Tanks
+    const buildBattlefieldScene = (
+      arena: BattlefieldConfig,
+      tanks: [TankCombatState, TankCombatState]
+    ) => {
+      if (tankRigs) {
+        for (const rig of tankRigs) {
+          if (rig.flyingTurret) {
+            scene.remove(rig.flyingTurret.mesh);
           }
         }
       }
-      brazierFlames.length = 0;
-      warBannerCloths.length = 0;
-      cloudClusters.length = 0;
 
-      // 1. Continuous 3D Canyon Terrain with Vertex Color Strata
-      const segsX = 116;
-      const segsZ = 24;
-      const widthX = 128;
-      const depthZ = 48;
-      const terrainGeo = new THREE.PlaneGeometry(widthX, depthZ, segsX, segsZ);
-      terrainGeo.rotateX(-Math.PI / 2);
+      while (arenaGroup.children.length > 0) {
+        const child = arenaGroup.children[0];
+        arenaGroup.remove(child);
+      }
 
-      const posAttr = terrainGeo.attributes.position as THREE.BufferAttribute;
-      const colors = new Float32Array(posAttr.count * 3);
+      updateBiomeSky(arena.biome);
+      const selectedTerrainTex =
+        arena.biome === 'snow'
+          ? snowTex
+          : arena.biome === 'industrial' || arena.biome === 'night'
+            ? indTex
+            : arena.biome === 'volcanic'
+              ? volcTex
+              : desertTex;
 
+      // 1. Sculpted 3D Battlefield Terrain Mesh (Width 220m, Depth 140m)
+      const width = 220;
+      const depth = 140;
+      const segX = 120;
+      const segZ = 36;
+      const groundGeo = new THREE.PlaneGeometry(width, depth, segX, segZ);
+      groundGeo.rotateX(-Math.PI / 2);
+
+      const posAttr = groundGeo.attributes.position as THREE.BufferAttribute;
       for (let i = 0; i < posAttr.count; i++) {
         const vx = posAttr.getX(i);
         const vz = posAttr.getZ(i);
         const baseH = terrainHeightAt(vx, arena);
-        let zOffset = 0;
-        if (vz < -3.5) {
-          const backDist = Math.abs(vz + 3.5);
-          zOffset =
-            Math.pow(backDist * 0.26, 1.55) +
-            Math.sin(vx * 0.14 + vz * 0.2) * 1.5;
-        } else if (vz > 3.5) {
-          const frontDist = vz - 3.5;
-          zOffset = -Math.pow(frontDist * 0.22, 1.3);
+
+        let extraMountain = 0;
+        if (vz < -10) {
+          const backFactor = Math.min(1, (-10 - vz) / 48);
+          const ridge =
+            Math.abs(Math.sin(vx * 0.06 + arena.seed * 0.01) * Math.cos(vx * 0.035)) * 22 +
+            Math.abs(Math.sin(vx * 0.14)) * 6;
+          extraMountain = backFactor * backFactor * ridge;
+        } else if (vz > 8) {
+          const frontFactor = Math.min(1, (vz - 8) / 28);
+          extraMountain = -frontFactor * 3.5;
         }
-        const finalY = baseH + zOffset;
-        posAttr.setY(i, finalY);
 
-        // Vertex color tint: grassy moss on high plateaus, warm sandstone on slopes, dark slate in deep gorge
-        if (finalY > 2.2 && Math.abs(vz) < 4.5) {
-          _color.setHex(0x658354);
-        } else if (finalY < -0.8) {
-          _color.setHex(0x57534e);
-        } else {
-          _color.setHex(0xd6b48a);
-        }
-        colors[i * 3] = _color.r;
-        colors[i * 3 + 1] = _color.g;
-        colors[i * 3 + 2] = _color.b;
+        posAttr.setY(i, baseH + extraMountain);
       }
-      terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      terrainGeo.computeVertexNormals();
+      groundGeo.computeVertexNormals();
 
-      const terrainMat = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        vertexColors: true,
-        map: terrainTex,
-        bumpMap: terrainTex,
-        bumpScale: 0.18,
-        roughness: 0.84,
-        metalness: 0.06,
+      const groundMat = new THREE.MeshStandardMaterial({
+        map: selectedTerrainTex,
+        roughness: arena.biome === 'snow' ? 0.65 : 0.85,
+        metalness: 0.08,
+        flatShading: true,
       });
-      const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
-      terrainMesh.receiveShadow = !isSoftwareGl;
-      worldGroup.add(terrainMesh);
+      const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+      groundMesh.receiveShadow = true;
+      arenaGroup.add(groundMesh);
 
-      // 2. Fortified Stone Bastion Pedestals + Fire Braziers + Wind War Banners under each Archer
-      const pedestalGeo = new THREE.CylinderGeometry(1.75, 2.2, 1.6, 14);
-      const pedestalMat = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: stoneTex,
-        bumpMap: stoneTex,
-        bumpScale: 0.08,
-        roughness: 0.76,
-        metalness: 0.15,
-      });
-      const trimRingGeo = new THREE.CylinderGeometry(1.82, 1.82, 0.16, 14);
-      const trimRingMat = new THREE.MeshStandardMaterial({
-        color: 0xd97706,
-        roughness: 0.3,
-        metalness: 0.8,
-      });
-
-      archers.forEach((arch, idx) => {
-        const ped = new THREE.Mesh(pedestalGeo, pedestalMat);
-        ped.position.set(arch.x, arch.y - 0.78, 0);
-        ped.receiveShadow = !isSoftwareGl;
-        ped.castShadow = !isSoftwareGl;
-        worldGroup.add(ped);
-
-        const ring = new THREE.Mesh(trimRingGeo, trimRingMat);
-        ring.position.set(arch.x, arch.y - 0.06, 0);
-        worldGroup.add(ring);
-
-        // Flickering Fire Brazier beside each bastion
-        const brazier = createTorchBrazier();
-        brazier.group.position.set(arch.x - arch.facing * 1.15, arch.y, -0.95);
-        worldGroup.add(brazier.group);
-        brazierFlames.push(brazier.flameMesh);
-
-        // Wind-Reactive War Banner behind each archer
-        const banner = createWarBanner(idx === 0);
-        banner.group.position.set(arch.x - arch.facing * 1.35, arch.y, 0.85);
-        worldGroup.add(banner.group);
-        warBannerCloths.push(banner.clothMesh);
-      });
-
-      // 3. Distant Canyon Citadel Towers & Mountain Peaks (Tall vertical silhouettes for Portrait Mode!)
-      const spireMat = new THREE.MeshStandardMaterial({
-        color: 0x334155,
-        map: stoneTex,
-        roughness: 0.88,
-        metalness: 0.1,
-      });
-      const landmarkPositions = [
-        { x: -36, z: -22, r: 8, h: 28 },
-        { x: -14, z: -26, r: 10, h: 35 },
-        { x: 0, z: -28, r: 7, h: 26 },
-        { x: 15, z: -25, r: 9.5, h: 33 },
-        { x: 37, z: -21, r: 8, h: 26 },
-      ];
-      for (const lm of landmarkPositions) {
-        const cone = new THREE.Mesh(new THREE.ConeGeometry(lm.r, lm.h, 7), spireMat);
-        cone.position.set(lm.x, lm.h * 0.4, lm.z);
-        worldGroup.add(cone);
-      }
-
-      // 4. Volumetric 3D Cloud Clusters in the Upper Sky (6 clusters)
-      for (let c = 0; c < 6; c++) {
-        const cloud = createCloudCluster();
-        cloud.position.set(-40 + c * 16, 15 + (c % 3) * 3.5, -14 - (c % 2) * 6);
-        const sc = 0.85 + (c % 3) * 0.22;
-        cloud.scale.set(sc, sc, sc);
-        worldGroup.add(cloud);
-        cloudClusters.push({ group: cloud, speedFactor: 0.4 + (c % 3) * 0.18 });
-      }
-
-      // 5. Instanced Cypress/Pine Trees along background ridge (32 instances)
-      const treeCount = 32;
-      const trunkGeo = new THREE.CylinderGeometry(0.14, 0.22, 1.15, 6);
-      trunkGeo.translate(0, 0.57, 0);
-      const trunkMat = new THREE.MeshStandardMaterial({
-        color: 0x4a2e19,
+      // 2. Distant Mountain Silhouettes & Radar Towers / Pine Trees
+      const peakMat = new THREE.MeshStandardMaterial({
+        color:
+          arena.biome === 'snow'
+            ? 0x94a3b8
+            : arena.biome === 'volcanic'
+              ? 0x292524
+              : arena.biome === 'desert'
+                ? 0x78350f
+                : 0x1e293b,
         roughness: 0.9,
-        metalness: 0.05,
+        flatShading: true,
       });
-      const trunkInstanced = new THREE.InstancedMesh(trunkGeo, trunkMat, treeCount);
-      trunkInstanced.frustumCulled = false;
-
-      const foliageGeo = new THREE.ConeGeometry(0.92, 3.4, 7);
-      foliageGeo.translate(0, 2.15, 0);
-      const foliageMat = new THREE.MeshStandardMaterial({
-        color: 0x2d5a27,
-        roughness: 0.82,
-        metalness: 0.06,
-      });
-      treeInstancedMesh = new THREE.InstancedMesh(foliageGeo, foliageMat, treeCount);
-      treeInstancedMesh.frustumCulled = false;
-      treeBasePositions.length = 0;
-
-      for (let i = 0; i < treeCount; i++) {
-        const tx = -44 + i * 2.85 + ((i * 7) % 3) * 0.4;
-        const tz = -5.2 - (i % 4) * 2.3;
-        const ty = terrainHeightAt(tx, arena) + Math.pow(Math.abs(tz + 3.5) * 0.26, 1.55) - 0.35;
-        const sc = 0.8 + (i % 5) * 0.14;
-        treeBasePositions.push({ x: tx, y: ty, z: tz, scale: sc });
-
-        _posVec.set(tx, ty, tz);
-        _scaleVec.set(sc, sc, sc);
-        _quat.identity();
-        _mat4.compose(_posVec, _quat, _scaleVec);
-        trunkInstanced.setMatrixAt(i, _mat4);
-        treeInstancedMesh.setMatrixAt(i, _mat4);
-        _color.setHSL(0.31 + (i % 3) * 0.02, 0.5, 0.38 + (i % 4) * 0.05);
-        treeInstancedMesh.setColorAt(i, _color);
+      for (let i = -4; i <= 4; i++) {
+        const px = i * 24 + ((arena.seed + i * 19) % 9);
+        const ph = 18 + Math.abs((i * 11 + arena.seed) % 16);
+        const peak = new THREE.Mesh(new THREE.ConeGeometry(14 + (i % 3) * 3, ph, 6), peakMat);
+        peak.position.set(px, ph * 0.42 - 2, -42 - Math.abs(i) * 3);
+        arenaGroup.add(peak);
       }
-      trunkInstanced.instanceMatrix.needsUpdate = true;
-      treeInstancedMesh.instanceMatrix.needsUpdate = true;
-      if (treeInstancedMesh.instanceColor) treeInstancedMesh.instanceColor.needsUpdate = true;
-      worldGroup.add(trunkInstanced);
-      worldGroup.add(treeInstancedMesh);
 
-      // 6. Destructible Obstacles
-      obstacleRigs = arena.obstacles.map((obs) => {
-        const rig = createCompositeObstacle(obs, woodTex, stoneTex, isSoftwareGl);
-        rig.group.visible = !obs.destroyed;
-        worldGroup.add(rig.group);
-        return rig;
-      });
+      // 3. Destructible Obstacles
+      obstacleRigs = [];
+      for (const obs of arena.obstacles) {
+        if (obs.destroyed) continue;
+        const oRig = createObstacleRig(obs, concreteTex);
+        arenaGroup.add(oRig.group);
+        obstacleRigs.push(oRig);
+      }
 
-      // 7. Composite 12-Part 3D Archers
-      const rig1 = createCompositeArcher(true, isSoftwareGl);
-      const rig2 = createCompositeArcher(false, isSoftwareGl);
-      worldGroup.add(rig1.root);
-      worldGroup.add(rig2.root);
-      archerRigs = [rig1, rig2];
-      updateArcherPose(rig1, archers[0], true, 0, propsRef.current.windSpeed);
-      updateArcherPose(rig2, archers[1], false, 0, propsRef.current.windSpeed);
+      // 4. Supply Crates (First-Aid Heal & Gold Coin Crates)
+      crateRigs = [];
+      for (const crate of arena.crates) {
+        if (crate.collected) continue;
+        const cRig = createSupplyCrateMesh(crate);
+        arenaGroup.add(cRig.group);
+        crateRigs.push(cRig);
+      }
+
+      // 5. Build Both 3D Tank Rigs
+      const rig1 = createTankRig(tanks[0].model, 1, renderer);
+      rig1.root.position.set(tanks[0].x, tanks[0].y, tanks[0].z);
+      arenaGroup.add(rig1.root);
+
+      const rig2 = createTankRig(tanks[1].model, -1, renderer);
+      rig2.root.position.set(tanks[1].x, tanks[1].y, tanks[1].z);
+      arenaGroup.add(rig2.root);
+
+      tankRigs = [rig1, rig2];
+      lastPosX = [tanks[0].x, tanks[1].x];
     };
 
-    buildArenaScene(propsRef.current.arena, propsRef.current.archers);
-    rebuildSceneArenaRef.current = buildArenaScene;
+    rebuildSceneArenaRef.current = buildBattlefieldScene;
+    buildBattlefieldScene(propsRef.current.arena, propsRef.current.tanks);
 
-    if (!isSoftwareGl) {
-      renderer.compile(scene, camera);
-    }
-
+    // Active Shell Flight State
     let activeFlight: {
       shooterId: 1 | 2;
       x: number;
       y: number;
+      z: number;
       vx: number;
       vy: number;
-      angleRad: number;
+      vz: number;
+      t: number;
       postImpactTimer: number;
       resolvedResult: HitDetectionResult | null;
     } | null = null;
@@ -523,49 +467,67 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     let hitstopTimer = 0;
     let cameraTrauma = 0;
 
-    launchArrowInternalRef.current = (trigger: ActiveShotTrigger) => {
-      const { archers } = propsRef.current;
-      const shooter = archers[trigger.shooterId - 1];
-      const origin = getBowLaunchOrigin(shooter);
-      const speed = powerToSpeed(trigger.powerPct);
-      const rad = THREE.MathUtils.degToRad(trigger.angleDeg);
+    launchShellInternalRef.current = (trigger: ActiveShotTrigger) => {
+      const p = propsRef.current;
+      const shooter = p.tanks[trigger.shooterId - 1];
+      const tempShooter: TankCombatState = {
+        ...shooter,
+        barrelAngleDeg: trigger.barrelAngleDeg,
+        powerPct: trigger.powerPct,
+        turretYawRad: trigger.turretYawRad,
+      };
+      const origin = getTankMuzzleOrigin(tempShooter);
+      const speed = powerToMuzzleVelocity(trigger.powerPct, shooter.shell.muzzleVelocityMultiplier);
+      const angleRad = (trigger.barrelAngleDeg * Math.PI) / 180;
+      const dir = shooter.facing;
 
       activeFlight = {
         shooterId: trigger.shooterId,
         x: origin.x,
         y: origin.y,
-        vx: Math.cos(rad) * speed * shooter.facing,
-        vy: Math.sin(rad) * speed,
-        angleRad: shooter.facing === 1 ? rad : Math.PI - rad,
+        z: origin.z,
+        vx: dir * speed * Math.cos(angleRad) * Math.cos(trigger.turretYawRad),
+        vy: speed * Math.sin(angleRad),
+        vz: speed * Math.cos(angleRad) * Math.sin(trigger.turretYawRad),
+        t: 0,
         postImpactTimer: 0,
         resolvedResult: null,
       };
 
+      // Update shell & tracer color to match the equipped shell type
+      scene.remove(flyingShell);
+      flyingShell = createShellMesh(shooter.shell.colorHex);
+      flyingShell.visible = true;
+      flyingShell.position.set(origin.x, origin.y, origin.z);
+      scene.add(flyingShell);
+
+      trailMat.color.setHex(shooter.shell.colorHex);
       trailHistory.length = 0;
       for (let i = 0; i < TRAIL_LENGTH; i++) {
-        trailHistory.push({ x: origin.x, y: origin.y, z: 0 });
+        trailHistory.push({ x: origin.x, y: origin.y, z: origin.z });
       }
-      arrowTrailLine.visible = true;
+      shellTrailLine.visible = true;
 
-      if (archerRigs) {
-        archerRigs[trigger.shooterId - 1].nockedArrow.visible = false;
+      // Trigger barrel recoil, muzzle flash, cannon blast audio, and muzzle smoke
+      if (tankRigs) {
+        const sRig = tankRigs[trigger.shooterId - 1];
+        sRig.recoilOffset = 0.42;
+        const flashMat = sRig.muzzleFlashMesh.material as THREE.MeshBasicMaterial;
+        flashMat.opacity = 1.0;
       }
 
-      flyingArrow.visible = true;
-      flyingArrow.position.set(origin.x, origin.y, 0);
-      flyingArrow.rotation.z = activeFlight.angleRad;
-
-      soundEngine.playBowRelease(trigger.powerPct);
-      soundEngine.startArrowWhistle();
-      spawnParticles(origin.x, origin.y, 0, 8, 0xfbbf24, 0.65);
+      cameraTrauma = 0.32;
+      soundEngine.playCannonBlast(shooter.model.barrelCount);
+      soundEngine.startShellWhistle();
+      spawnParticles(origin.x, origin.y, origin.z, 14, shooter.shell.colorHex, 0.9, 1.1);
     };
 
-    // Drag-and-Release Aiming on Touch / Mouse Screen
+    // Direct Touch / Mouse Drag on 3D Canvas to Aim Tank Barrel (No Cluttered UI Sliders!)
     let isDraggingAim = false;
     let dragStartX = 0;
     let dragStartY = 0;
-    let dragStartAngle = 45;
-    let dragStartPower = 70;
+    let dragStartAngle = 38;
+    let dragStartPower = 72;
 
     const onPointerDown = (e: PointerEvent) => {
       const p = propsRef.current;
@@ -575,9 +537,9 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       isDraggingAim = true;
       dragStartX = e.clientX;
       dragStartY = e.clientY;
-      const activeArcher = p.archers[p.currentTurn - 1];
-      dragStartAngle = activeArcher.angleDeg;
-      dragStartPower = activeArcher.powerPct;
+      const activeTank = p.tanks[p.currentTurn - 1];
+      dragStartAngle = activeTank.barrelAngleDeg;
+      dragStartPower = activeTank.powerPct;
       renderer.domElement.setPointerCapture?.(e.pointerId);
     };
 
@@ -590,18 +552,18 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       }
 
       const rect = renderer.domElement.getBoundingClientRect();
-      const span = Math.min(rect.width, rect.height, 360);
-      const dx = (e.clientX - dragStartX) / Math.max(180, span);
-      const dy = (e.clientY - dragStartY) / Math.max(180, span);
+      const span = Math.min(rect.width, rect.height, 340);
+      const dx = (e.clientX - dragStartX) / Math.max(170, span);
+      const dy = (e.clientY - dragStartY) / Math.max(170, span);
 
-      const activeArcher = p.archers[p.currentTurn - 1];
-      const pullDelta = -dx * activeArcher.facing * 95;
-      const elevDelta = -dy * 95;
+      const activeTank = p.tanks[p.currentTurn - 1];
+      const pullDelta = -dx * activeTank.facing * 85;
+      const elevDelta = -dy * 85;
 
-      const newAngle = Math.round(Math.max(5, Math.min(85, dragStartAngle + elevDelta)));
-      const newPower = Math.round(Math.max(15, Math.min(100, dragStartPower + pullDelta)));
+      const newAngle = Math.round(Math.max(5, Math.min(75, dragStartAngle + elevDelta)));
+      const newPower = Math.round(Math.max(20, Math.min(100, dragStartPower + pullDelta)));
 
-      soundEngine.playBowDrawCreak(newPower);
+      soundEngine.playTurretServo(newPower);
       p.onAimChange(newAngle, newPower);
     };
 
@@ -609,25 +571,19 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       if (!isDraggingAim) return;
       isDraggingAim = false;
       renderer.domElement.releasePointerCapture?.(e.pointerId);
-      const distDragged = Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY);
-      if (distDragged > 38) {
-        propsRef.current.onDragFire();
-      }
     };
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
 
-    // ResizeObserver with Portrait/Landscape adaptive FOV
     const handleResize = () => {
       if (!container) return;
       const w = container.clientWidth || window.innerWidth;
       const h = container.clientHeight || window.innerHeight;
       const aspect = w / h;
       camera.aspect = aspect;
-      // Wider vertical FOV in portrait mode so 3D depth and tall parabolic arcs fill the vertical screen
-      camera.fov = aspect < 1 ? 58 : 42;
+      camera.fov = aspect < 1 ? 56 : 44;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
       renderer.render(scene, camera);
@@ -649,287 +605,248 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       }
       const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
       gl.flush();
-      const poll = () => {
+      function poll() {
         if (isUnmounted) return;
-        const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
-        if (state === gl.UNSIGNALED) {
-          frameId = window.setTimeout(poll, 5);
-        } else {
-          if (sync) gl.deleteSync(sync);
-          frameId = window.setTimeout(cb, 80);
+        const s = gl.clientWaitSync(sync!, 0, 0);
+        if (s === gl.TIMEOUT_EXPIRED) {
+          frameId = window.setTimeout(poll, 4);
+          return;
         }
-      };
-      frameId = window.setTimeout(poll, 5);
+        gl.deleteSync(sync);
+        cb();
+      }
+      frameId = window.setTimeout(poll, 4);
     }
 
-    function tick() {
+    const tick = () => {
       if (isUnmounted) return;
       const nowMs = performance.now();
       const rawDt = (nowMs - lastFrameMs) / 1000;
       lastFrameMs = nowMs;
-      const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
+      const dt = Math.min(rawDt, 0.05);
       const elapsed = (nowMs - startTimeMs) / 1000;
+
       const currentProps = propsRef.current;
 
-      // Update Sky Dome Shader & Fog
-      updateSkyWeather(currentProps.weather, elapsed);
-      if (currentProps.weather === 'dust') {
-        fogColor.setHex(0x452215);
-        weatherMat.color.setHex(0xfde68a);
-      } else if (currentProps.weather === 'rain') {
-        fogColor.setHex(0x111a2e);
-        weatherMat.color.setHex(0x93c5fd);
-      } else {
-        fogColor.setHex(0x1e2542);
-        weatherMat.color.setHex(0xe2e8f0);
-      }
-      if (scene.fog instanceof THREE.FogExp2) {
-        scene.fog.color.copy(fogColor);
+      if (hitstopTimer > 0) {
+        hitstopTimer -= dt;
       }
 
-      // Animate Fire Braziers flickering & War Banners waving with windSpeed
-      for (let i = 0; i < brazierFlames.length; i++) {
-        const fl = brazierFlames[i];
-        const flicker = 0.88 + Math.sin(elapsed * 14 + i * 2) * 0.16;
-        fl.scale.set(flicker, 0.9 + Math.cos(elapsed * 18 + i) * 0.22, flicker);
-        fl.rotation.z = -currentProps.windSpeed * 0.04;
-      }
-      for (let i = 0; i < warBannerCloths.length; i++) {
-        const cloth = warBannerCloths[i];
-        const windDir = currentProps.windSpeed >= 0 ? 0 : Math.PI;
-        cloth.rotation.y = windDir + Math.sin(elapsed * 5.5 + i) * (0.12 + Math.abs(currentProps.windSpeed) * 0.03);
-      }
+      // 1. Update Tank Positions, Wheel Rotation, Slope Tilt, and Turret Blow-Off Physics
+      if (tankRigs) {
+        for (let i = 0; i < 2; i++) {
+          const tState = currentProps.tanks[i];
+          const rig = tankRigs[i];
 
-      // Drift Volumetric 3D Clouds with Wind
-      for (const cl of cloudClusters) {
-        cl.group.position.x += currentProps.windSpeed * cl.speedFactor * dt;
-        if (cl.group.position.x > 52) cl.group.position.x = -52;
-        if (cl.group.position.x < -52) cl.group.position.x = 52;
-      }
+          // Smoothly interpolate tank hull position when driving
+          rig.root.position.x = THREE.MathUtils.lerp(rig.root.position.x, tState.x, 1 - Math.exp(-12 * dt));
+          rig.root.position.y = THREE.MathUtils.lerp(rig.root.position.y, tState.y, 1 - Math.exp(-12 * dt));
+          rig.root.position.z = THREE.MathUtils.lerp(rig.root.position.z, tState.z, 1 - Math.exp(-12 * dt));
 
-      // Animate Trees swaying with windSpeed
-      if (treeInstancedMesh) {
-        const windLean = currentProps.windSpeed * 0.025;
-        for (let i = 0; i < treeBasePositions.length; i++) {
-          const tb = treeBasePositions[i];
-          _posVec.set(tb.x, tb.y, tb.z);
-          _scaleVec.set(tb.scale, tb.scale, tb.scale);
-          const sway = windLean + Math.sin(elapsed * 2.2 + i) * 0.04;
-          _euler.set(0, 0, -sway);
-          _quat.setFromEuler(_euler);
-          _mat4.compose(_posVec, _quat, _scaleVec);
-          treeInstancedMesh.setMatrixAt(i, _mat4);
-        }
-        treeInstancedMesh.instanceMatrix.needsUpdate = true;
-      }
+          const deltaX = rig.root.position.x - lastPosX[i];
+          lastPosX[i] = rig.root.position.x;
+          if (Math.abs(deltaX) > 0.0005) {
+            for (const wheel of rig.wheels) {
+              wheel.rotation.z -= deltaX * 2.8;
+            }
+          }
 
-      // Animate ambient wind/rain/dust streaks
-      const windVelX = currentProps.windSpeed * 1.85;
-      const fallVelY = currentProps.weather === 'rain' ? -14.0 : -0.6;
-      const streakTilt =
-        currentProps.weather === 'rain'
-          ? Math.atan2(fallVelY, windVelX || 0.1)
-          : Math.sin(elapsed + 1) * 0.1;
+          const slopeRad = terrainSlopeAt(rig.root.position.x, currentProps.arena);
+          updateTankPose(rig, tState.facing, tState.barrelAngleDeg, tState.turretYawRad, slopeRad, dt);
 
-      for (let i = 0; i < WEATHER_COUNT; i++) {
-        const wp = weatherParticles[i];
-        wp.x += windVelX * wp.speedMult * dt;
-        wp.y += fallVelY * wp.speedMult * dt;
-        if (wp.x > 46) wp.x = -46;
-        if (wp.x < -46) wp.x = 46;
-        if (wp.y < -2) wp.y = 24;
-        if (wp.y > 24) wp.y = -2;
-
-        _posVec.set(wp.x, wp.y, wp.z);
-        _euler.set(0, 0, streakTilt);
-        _quat.setFromEuler(_euler);
-        _scaleVec.set(
-          1 + Math.abs(currentProps.windSpeed) * 0.18,
-          currentProps.weather === 'rain' ? 2.2 : 1.0,
-          1
-        );
-        _mat4.compose(_posVec, _quat, _scaleVec);
-        weatherInstanced.setMatrixAt(i, _mat4);
-      }
-      weatherInstanced.instanceMatrix.needsUpdate = true;
-
-      // Update Archer Poses, Hit Flashes & Ragdoll Physics
-      if (archerRigs) {
-        for (let idx = 0; idx < 2; idx++) {
-          const rig = archerRigs[idx];
-          const arch = currentProps.archers[idx];
-          updateArcherPose(
-            rig,
-            arch,
-            currentProps.currentTurn === arch.id,
-            elapsed,
-            currentProps.windSpeed
-          );
-          stepRagdollPhysics(rig, currentProps.arena, dt);
-
-          if (rig.flashTimer > 0) {
-            rig.flashTimer = Math.max(0, rig.flashTimer - dt);
-            const isWhite = rig.flashTimer > 0;
-            rig.hitFlashMaterials.forEach((mat, mIdx) => {
-              mat.color.setHex(isWhite ? 0xffffff : rig.baseColors[mIdx]);
-              mat.emissive.setHex(isWhite ? 0xffedd5 : 0x000000);
-            });
+          if (rig.turretBlownOff) {
+            stepFlyingTurret(rig, dt, (x) => terrainHeightAt(x, currentProps.arena));
+            // Emit continuous dark smoke & embers from the destroyed hull ring
+            if (Math.random() < 0.35) {
+              spawnParticles(rig.root.position.x, rig.root.position.y + 1.1, rig.root.position.z, 1, 0x27272a, 0.45, 1.3);
+            }
           }
         }
       }
 
-      // Update Obstacle Hit Flashes & Visibility
-      for (let i = 0; i < obstacleRigs.length; i++) {
-        const oRig = obstacleRigs[i];
-        const obsData = currentProps.arena.obstacles[i];
-        if (obsData) {
-          oRig.group.visible = !obsData.destroyed;
-        }
-        if (oRig.flashTimer > 0) {
-          oRig.flashTimer = Math.max(0, oRig.flashTimer - dt);
-          const isFlash = oRig.flashTimer > 0;
-          oRig.materials.forEach((m, mIdx) => {
-            m.color.setHex(isFlash ? 0xffffff : oRig.baseColors[mIdx]);
-          });
+      // 2. Sync Obstacles & Supply Crates visibility (hide in Garage/Shop so the 3D Tank showcase is 100% unobstructed!)
+      const inBattle =
+        currentProps.appState === 'playing' ||
+        currentProps.appState === 'paused' ||
+        currentProps.appState === 'gameover';
+
+      for (const oRig of obstacleRigs) {
+        const obsState = currentProps.arena.obstacles.find((o) => o.id === oRig.id);
+        oRig.group.visible = inBattle && Boolean(obsState && !obsState.destroyed);
+      }
+
+      for (const cRig of crateRigs) {
+        const cState = currentProps.arena.crates.find((c) => c.id === cRig.id);
+        cRig.group.visible = inBattle && Boolean(cState && !cState.collected);
+        if (cRig.group.visible) {
+          cRig.group.rotation.y = elapsed * 1.4;
+          cRig.group.position.y = (cState?.y ?? 0) + 0.58 + Math.sin(elapsed * 2.8) * 0.12;
         }
       }
 
-      // Update Short Dashed Trajectory Preview (3 to 5 meters)
+      // 3. Update Direct 3D Dashed Trajectory Line right next to the Tank Barrel
+      const activeTank = currentProps.tanks[currentProps.currentTurn - 1];
       const showPreview =
-        currentProps.appState === 'playing' && !activeFlight && !currentProps.isAITurn;
+        currentProps.appState === 'playing' &&
+        !activeFlight &&
+        activeTank.hp > 0 &&
+        !currentProps.isAITurn;
+
       previewLine.visible = showPreview;
       previewTipMesh.visible = showPreview;
 
       if (showPreview) {
-        const activeArcher = currentProps.archers[currentProps.currentTurn - 1];
-        const origin = getBowLaunchOrigin(activeArcher);
-        const pts = computeTrajectoryPreview(
-          origin,
-          activeArcher.angleDeg,
-          activeArcher.powerPct,
-          activeArcher.facing,
+        previewMat.color.setHex(activeTank.shell.colorHex);
+        previewTipMat.color.setHex(activeTank.shell.colorHex);
+
+        const pts = computeShortTrajectoryPreview(
+          activeTank,
           currentProps.windSpeed,
-          4.2
+          TRAJECTORY_PREVIEW_MAX_METERS
         );
-        const lastPt = pts[pts.length - 1] || origin;
-        for (let i = 0; i < previewMaxPoints; i++) {
-          const pt = pts[Math.min(i, pts.length - 1)];
-          previewPositions[i * 3] = pt.x;
-          previewPositions[i * 3 + 1] = pt.y;
-          previewPositions[i * 3 + 2] = 0;
+        const posArr = previewGeo.attributes.position as THREE.BufferAttribute;
+        const count = Math.min(pts.length, MAX_PREVIEW_VERTS);
+
+        for (let i = 0; i < count; i++) {
+          posArr.setXYZ(i, pts[i].x, pts[i].y, pts[i].z);
         }
-        (previewLine.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+        const lastPt = pts[count - 1] || { x: activeTank.x, y: activeTank.y, z: activeTank.z };
+        for (let i = count; i < MAX_PREVIEW_VERTS; i++) {
+          posArr.setXYZ(i, lastPt.x, lastPt.y, lastPt.z);
+        }
+        posArr.needsUpdate = true;
+        previewGeo.setDrawRange(0, count);
         previewLine.computeLineDistances();
 
-        previewTipMesh.position.set(lastPt.x, lastPt.y, 0);
+        previewTipMesh.position.set(lastPt.x, lastPt.y, lastPt.z);
         previewTipMesh.lookAt(camera.position);
       }
 
-      // Sim-level Hitstop & Active Arrow Ballistics + Trail Ribbon
-      if (hitstopTimer > 0) {
-        hitstopTimer = Math.max(0, hitstopTimer - dt);
-      } else if (activeFlight && currentProps.appState !== 'paused') {
+      // 4. Step Active Flying Artillery Shell
+      if (activeFlight && hitstopTimer <= 0) {
         if (!activeFlight.resolvedResult) {
-          const next = stepArrowPhysics(activeFlight, currentProps.windSpeed, dt);
-          soundEngine.updateArrowWhistle(Math.hypot(next.vx, next.vy), next.y);
+          const subSteps = 3;
+          const subDt = dt / subSteps;
+          let hitResult: HitDetectionResult | null = null;
 
-          const hit = evaluateSegmentCollision(
-            activeFlight.x,
-            activeFlight.y,
-            next.x,
-            next.y,
-            next.vx,
-            next.vy,
-            activeFlight.shooterId,
-            currentProps.archers,
-            currentProps.arena
-          );
+          for (let s = 0; s < subSteps; s++) {
+            const nextState = stepProjectile(
+              {
+                x: activeFlight.x,
+                y: activeFlight.y,
+                z: activeFlight.z,
+                vx: activeFlight.vx,
+                vy: activeFlight.vy,
+                vz: activeFlight.vz,
+                t: activeFlight.t,
+              },
+              subDt,
+              currentProps.windSpeed
+            );
 
-          activeFlight.x = next.x;
-          activeFlight.y = next.y;
-          activeFlight.vx = next.vx;
-          activeFlight.vy = next.vy;
-          activeFlight.angleRad = next.angleRad;
+            const check = evaluatePointCollision(
+              nextState.x,
+              nextState.y,
+              nextState.z,
+              activeFlight.shooterId,
+              currentProps.tanks,
+              currentProps.arena,
+              nextState.t
+            );
 
-          flyingArrow.position.set(activeFlight.x, activeFlight.y, 0);
-          flyingArrow.rotation.z = activeFlight.angleRad;
+            activeFlight.x = nextState.x;
+            activeFlight.y = nextState.y;
+            activeFlight.z = nextState.z;
+            activeFlight.vx = nextState.vx;
+            activeFlight.vy = nextState.vy;
+            activeFlight.vz = nextState.vz;
+            activeFlight.t = nextState.t;
 
-          // Update glowing flight trail history
-          trailHistory.pop();
-          trailHistory.unshift({ x: activeFlight.x, y: activeFlight.y, z: 0 });
-          for (let i = 0; i < TRAIL_LENGTH; i++) {
-            const tp = trailHistory[i];
-            trailPositions[i * 3] = tp.x;
-            trailPositions[i * 3 + 1] = tp.y;
-            trailPositions[i * 3 + 2] = tp.z;
-          }
-          (arrowTrailLine.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-
-          if (hit.hitType !== 'none' || Math.abs(next.x) > currentProps.arena.distance * 1.25 || next.y < -18) {
-            const finalHit: HitDetectionResult =
-              hit.hitType !== 'none'
-                ? hit
-                : { hitType: 'terrain', impactPoint: { x: next.x, y: next.y } };
-
-            activeFlight.resolvedResult = finalHit;
-            activeFlight.postImpactTimer = 0.55;
-            flyingArrow.position.set(finalHit.impactPoint.x, finalHit.impactPoint.y, 0);
-
-            const stuck = createArrowMesh();
-            stuck.position.set(finalHit.impactPoint.x, finalHit.impactPoint.y, 0);
-            stuck.rotation.z = activeFlight.angleRad;
-            scene.add(stuck);
-            stuckArrows.push(stuck);
-            if (stuckArrows.length > MAX_STUCK_ARROWS) {
-              const oldest = stuckArrows.shift()!;
-              scene.remove(oldest);
+            if (check.hitType !== 'none') {
+              activeFlight.x = check.impactPoint.x;
+              activeFlight.y = check.impactPoint.y;
+              activeFlight.z = check.impactPoint.z;
+              hitResult = check;
+              break;
             }
-            flyingArrow.visible = false;
-            arrowTrailLine.visible = false;
 
-            if (finalHit.hitType === 'archer' && finalHit.targetArcherId && archerRigs) {
-              const targetRig = archerRigs[finalHit.targetArcherId - 1];
-              const targetArch = currentProps.archers[finalHit.targetArcherId - 1];
-              targetRig.flashTimer = 0.15;
-              const isHead = finalHit.hitZone === 'head';
-              const isLethal = targetArch.hp - (finalHit.damage || 0) <= 0;
+            if (Math.abs(activeFlight.x) > currentProps.arena.distance * 1.35 || activeFlight.y < -25) {
+              hitResult = {
+                hitType: 'ground',
+                impactPoint: {
+                  x: activeFlight.x,
+                  y: terrainHeightAt(activeFlight.x, currentProps.arena),
+                  z: activeFlight.z,
+                },
+              };
+              break;
+            }
+          }
 
-              hitstopTimer = isHead || isLethal ? 0.08 : 0.045;
-              cameraTrauma = isHead || isLethal ? 0.9 : 0.6;
-              soundEngine.playImpactFlesh(isHead);
+          // Orient shell along velocity vector
+          flyingShell.position.set(activeFlight.x, activeFlight.y, activeFlight.z);
+          const pitchAngle = Math.atan2(activeFlight.vy, activeFlight.vx);
+          flyingShell.rotation.z = pitchAngle;
 
-              spawnParticles(
-                finalHit.impactPoint.x,
-                finalHit.impactPoint.y,
-                0,
-                isHead ? 30 : 18,
-                isHead ? 0xef4444 : 0xf97316,
-                isHead ? 1.4 : 1.05
-              );
+          // Update tracer ribbon
+          trailHistory.unshift({ x: activeFlight.x, y: activeFlight.y, z: activeFlight.z });
+          if (trailHistory.length > TRAIL_LENGTH) trailHistory.pop();
+          const tPos = trailGeo.attributes.position as THREE.BufferAttribute;
+          for (let i = 0; i < TRAIL_LENGTH; i++) {
+            const pt = trailHistory[Math.min(i, trailHistory.length - 1)];
+            tPos.setXYZ(i, pt.x, pt.y, pt.z);
+          }
+          tPos.needsUpdate = true;
+
+          soundEngine.updateShellWhistle(Math.hypot(activeFlight.vx, activeFlight.vy), activeFlight.vy);
+
+          if (hitResult) {
+            soundEngine.stopShellWhistle();
+            activeFlight.resolvedResult = hitResult;
+            activeFlight.postImpactTimer = 0.52;
+            flyingShell.visible = false;
+            shellTrailLine.visible = false;
+
+            const ix = hitResult.impactPoint.x;
+            const iy = hitResult.impactPoint.y;
+            const iz = hitResult.impactPoint.z;
+
+            if (hitResult.hitType === 'tank' && hitResult.targetTankId && tankRigs) {
+              const targetIdx = hitResult.targetTankId - 1;
+              const targetState = currentProps.tanks[targetIdx];
+              const targetRig = tankRigs[targetIdx];
+              const dmg = hitResult.damage || 28;
+              const isLethal = targetState.hp - dmg <= 0;
+              const isTurret = hitResult.hitZone === 'turret';
+
+              hitstopTimer = isLethal ? 0.1 : isTurret ? 0.065 : 0.035;
+              cameraTrauma = isLethal ? 1.0 : isTurret ? 0.72 : 0.45;
+
+              triggerShockwave(ix, iy, iz, isLethal ? 0xef4444 : 0xf97316);
+              spawnParticles(ix, iy, iz, isLethal ? 42 : 24, isTurret ? 0xef4444 : 0xf97316, isLethal ? 1.65 : 1.15, 1.3);
+              spawnParticles(ix, iy + 0.4, iz, isLethal ? 24 : 10, 0x27272a, 0.85, 1.5);
 
               if (isLethal) {
-                triggerArcherRagdoll(targetRig, scene, activeFlight.vx, activeFlight.vy);
-              }
-            } else if (finalHit.hitType === 'obstacle' && finalHit.obstacleId) {
-              const obsIdx = currentProps.arena.obstacles.findIndex((o) => o.id === finalHit.obstacleId);
-              const obs = currentProps.arena.obstacles[obsIdx];
-              const oRig = obstacleRigs[obsIdx];
-              if (oRig) oRig.flashTimer = 0.12;
-              const willDestroy = obs ? obs.hp - (finalHit.damage || 30) <= 0 : false;
-              hitstopTimer = willDestroy ? 0.055 : 0.025;
-              cameraTrauma = willDestroy ? 0.55 : 0.3;
-
-              if (obs?.kind === 'barrel') {
-                soundEngine.playImpactWood(willDestroy);
-                spawnParticles(finalHit.impactPoint.x, finalHit.impactPoint.y, 0, willDestroy ? 24 : 12, 0xb45309, 1.15);
+                soundEngine.playTankExplosion();
+                triggerTankExplosion(targetRig, scene);
               } else {
-                soundEngine.playImpactStone(willDestroy);
-                spawnParticles(finalHit.impactPoint.x, finalHit.impactPoint.y, 0, willDestroy ? 26 : 14, 0x94a3b8, 1.15);
+                soundEngine.playImpactArmor(isTurret);
               }
+            } else if (hitResult.hitType === 'crate') {
+              cameraTrauma = 0.25;
+              soundEngine.playCratePickup();
+              triggerShockwave(ix, iy, iz, 0x10b981);
+              spawnParticles(ix, iy, iz, 20, 0xfbbf24, 1.1, 1.0);
+            } else if (hitResult.hitType === 'obstacle') {
+              cameraTrauma = 0.48;
+              soundEngine.playImpactArmor(false);
+              triggerShockwave(ix, iy, iz, 0xf59e0b);
+              spawnParticles(ix, iy, iz, 26, 0x94a3b8, 1.25, 1.2);
             } else {
-              cameraTrauma = 0.2;
-              soundEngine.playImpactDirt();
-              spawnParticles(finalHit.impactPoint.x, finalHit.impactPoint.y, 0, 12, 0xd6a77a, 0.8);
+              cameraTrauma = 0.28;
+              soundEngine.playImpactGround();
+              triggerShockwave(ix, iy, iz, 0xd97706);
+              spawnParticles(ix, iy, iz, 16, 0xb4844e, 0.9, 1.0);
             }
           }
         } else {
@@ -937,17 +854,21 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
           if (activeFlight.postImpactTimer <= 0) {
             const res = activeFlight.resolvedResult;
             const landX = res.impactPoint.x;
-            const shooterIdx = activeFlight.shooterId - 1;
             activeFlight = null;
-            if (archerRigs && !archerRigs[shooterIdx].ragdollActive) {
-              archerRigs[shooterIdx].nockedArrow.visible = true;
-            }
             currentProps.onShotResolved(res, landX);
           }
         }
       }
 
-      // Step Pooled Impact Particles
+      // 5. Step Shockwave Ring & Pooled Particles
+      if (shockwaveTimer > 0) {
+        shockwaveTimer = Math.max(0, shockwaveTimer - dt);
+        const progress = 1 - shockwaveTimer / 0.45;
+        const s = 0.6 + progress * 6.5;
+        shockwaveMesh.scale.set(s, s, s);
+        shockwaveMat.opacity = Math.max(0, (1 - progress) * 0.85);
+      }
+
       for (let i = 0; i < PARTICLE_COUNT; i++) {
         const p = particlePool[i];
         if (!p.active) {
@@ -979,137 +900,155 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       particleInstanced.instanceMatrix.needsUpdate = true;
       if (particleInstanced.instanceColor) particleInstanced.instanceColor.needsUpdate = true;
 
-      // PORTRAIT & LANDSCAPE ADAPTIVE 3D CAMERA CHOREOGRAPHY
-      const dist = currentProps.arena.distance;
-      const p1 = currentProps.archers[0];
-      const p2 = currentProps.archers[1];
-      const activeArcher = currentProps.archers[currentProps.currentTurn - 1];
-      const opponentArcher = currentProps.archers[currentProps.currentTurn === 1 ? 1 : 0];
-      const midY = (p1.y + p2.y) * 0.5 + 2.2;
+      // 6. Step Biome Weather Particles
+      const wAttr = weatherGeo.attributes.position as THREE.BufferAttribute;
+      const windVx = currentProps.windSpeed * 2.1;
+      const fallVy = currentProps.arena.biome === 'industrial' ? -13.0 : -4.2;
+
+      for (let i = 0; i < WEATHER_COUNT; i++) {
+        const idx = i * 2;
+        let x = wAttr.getX(idx) + windVx * dt;
+        let y = wAttr.getY(idx) + fallVy * dt;
+        const z = wAttr.getZ(idx);
+
+        if (x > 60) x = -60;
+        if (x < -60) x = 60;
+        if (y < -2) y = 26;
+
+        const streakX = windVx * 0.045;
+        const streakY = fallVy * 0.045;
+        wAttr.setXYZ(idx, x, y, z);
+        wAttr.setXYZ(idx + 1, x + streakX, y + streakY, z);
+      }
+      wAttr.needsUpdate = true;
+
+      // 7. 5-Angle Camera Choreography (Supports Garage Orbit + 5 Battle Camera Presets in Portrait & Landscape!)
+      const p1 = currentProps.tanks[0];
+      const p2 = currentProps.tanks[1];
+      const curTank = currentProps.tanks[currentProps.currentTurn - 1];
+      const oppTank = currentProps.tanks[currentProps.currentTurn === 1 ? 1 : 0];
+      const midY = (p1.y + p2.y) * 0.5 + 1.8;
       const isPortrait = camera.aspect < 1.0;
 
-      if (currentProps.appState === 'title') {
-        if (isPortrait) {
-          const halfDist = dist * 0.5;
-          const sway = Math.sin(elapsed * 0.35);
-          _camTargetPos.set(-halfDist - 10.5 + sway * 1.5, midY + 4.8, 5.0 + Math.cos(elapsed * 0.25) * 0.8);
-          _camLookTarget.set(-halfDist + 8.5, midY - 0.8, 0);
-        } else {
-          const panX = -6 + Math.sin(elapsed * 0.35) * 9;
-          _camTargetPos.set(panX, midY + 2.5, 26);
-          _camLookTarget.set(panX * 0.35, midY - 0.2, 0);
-        }
-      } else if (activeFlight && currentProps.cinematicFollow) {
-        // Cinematic 3D Arrow Follow Camera (works in both Portrait & Landscape!)
-        const arrowX = activeFlight.x;
-        const arrowY = Math.max(midY - 1, activeFlight.y);
+      if (currentProps.appState === 'garage' || currentProps.appState === 'shop') {
+        // 3D Garage Showcase Camera orbiting the front hemisphere of the Player's Tank
+        // Offset lookAt downward so the 3D Tank projects into the open upper-middle viewport above the Garage panel!
+        const swayAngle = 0.58 + Math.sin(elapsed * 0.55) * 0.45;
+        const radius = isPortrait ? 6.8 : 5.8;
+        _camTargetPos.set(
+          p1.x + Math.cos(swayAngle) * radius,
+          p1.y + (isPortrait ? 1.85 : 2.1),
+          p1.z + Math.sin(swayAngle) * radius
+        );
+        _camLookTarget.set(p1.x + 0.2, p1.y - (isPortrait ? 1.35 : 0.15), p1.z);
+        camera.position.copy(_camTargetPos);
+        currentCamLook.copy(_camLookTarget);
+      } else if (activeFlight && currentProps.cameraPreset === 'cinematic') {
+        // Preset 5: Shell Follow Cinematic Camera
         const dirSign = activeFlight.shooterId === 1 ? 1 : -1;
         if (isPortrait) {
-          // Over-the-shoulder 3D chase camera behind/beside the arrow for dramatic vertical screen depth
-          _camTargetPos.set(arrowX - dirSign * 9.5, arrowY + 3.4, 4.8);
-          _camLookTarget.set(arrowX + dirSign * 6.0, arrowY + 0.2, 0);
+          _camTargetPos.set(activeFlight.x - dirSign * 10.5, Math.max(3.5, activeFlight.y + 3.6), activeFlight.z + 5.2);
+          _camLookTarget.set(activeFlight.x + dirSign * 6.0, Math.max(1.2, activeFlight.y + 0.2), activeFlight.z);
         } else {
-          const zoomZ = activeFlight.resolvedResult ? 17 : 23;
-          _camTargetPos.set(arrowX * 0.88, arrowY + 2.4, zoomZ);
-          _camLookTarget.set(arrowX, arrowY + 0.4, 0);
+          _camTargetPos.set(activeFlight.x * 0.88, Math.max(3.2, activeFlight.y + 2.8), 22);
+          _camLookTarget.set(activeFlight.x, Math.max(1.2, activeFlight.y + 0.3), activeFlight.z);
         }
-      } else if (isPortrait) {
-        // VERTICAL PORTRAIT MODE CAMERA FRAMING
-        const side = activeArcher.facing;
-        if (currentProps.cameraMode === 'overview') {
-          // Elevated 3D Diagonal Panorama fitting both archers across the vertical screen
-          _camTargetPos.set(activeArcher.x - side * 15.5, activeArcher.y + 8.8, 4.2);
-          _camLookTarget.set(activeArcher.x + side * 6.5, midY - 0.8, 0);
-        } else if (currentProps.cameraMode === 'focus') {
-          // Close-up Over-the-Shoulder 3D Aiming View
-          _camTargetPos.set(activeArcher.x - side * 9.5, activeArcher.y + 4.8, 2.8);
-          _camLookTarget.set(activeArcher.x + side * 5.0, activeArcher.y + 1.4, 0);
+      } else if (currentProps.cameraPreset === 'turret') {
+        // Preset 1: Behind-the-Turret 3D Aiming View
+        const side = curTank.facing;
+        _camTargetPos.set(
+          curTank.x - side * (isPortrait ? 9.5 : 8.2),
+          curTank.y + (isPortrait ? 4.4 : 3.6),
+          curTank.z + (isPortrait ? 2.4 : 2.0)
+        );
+        _camLookTarget.set(
+          curTank.x + side * 14.0,
+          curTank.y + 2.2,
+          oppTank.z * 0.5
+        );
+      } else if (currentProps.cameraPreset === 'drone') {
+        // Preset 4: Top-Down Strategic Drone View
+        const dist = currentProps.arena.distance;
+        _camTargetPos.set(0, midY + (isPortrait ? dist * 1.15 : dist * 0.78), isPortrait ? 18 : 24);
+        _camLookTarget.set(0, midY - 1.0, 0);
+      } else if (currentProps.cameraPreset === 'side') {
+        // Preset 3: Wide Side Artillery View
+        const dist = currentProps.arena.distance;
+        if (isPortrait) {
+          const side = curTank.facing;
+          _camTargetPos.set(curTank.x - side * 16.5, curTank.y + 9.2, 4.8);
+          _camLookTarget.set(curTank.x + side * 7.5, midY - 0.8, 0);
         } else {
-          // 'auto' in Portrait: Over-the-shoulder 3/4 diagonal canyon perspective (z = 3.2)
-          // Keeps the full foreground archer (lower-left), 4.2m trajectory line, obstacles,
-          // and opponent archer (upper-right) inside the narrow 390x844 portrait frustum!
-          _camTargetPos.set(activeArcher.x - side * 13.8, activeArcher.y + 7.2, 3.2);
-          _camLookTarget.set(activeArcher.x + side * 5.8, midY - 0.8, 0);
+          _camTargetPos.set(0, midY + 4.2, Math.max(52, dist * 1.08));
+          _camLookTarget.set(0, midY - 0.2, 0);
         }
       } else {
-        // LANDSCAPE / DESKTOP 2.5D SIDE-VIEW FRAMING
-        if (currentProps.cameraMode === 'focus') {
-          const focusX = activeArcher.x * 0.62;
-          _camTargetPos.set(focusX, activeArcher.y + 4.2, 28);
-          _camLookTarget.set(activeArcher.x * 0.25, midY, 0);
-        } else if (currentProps.cameraMode === 'overview') {
-          const requiredZ = Math.max(46, dist * 1.16);
-          _camTargetPos.set(0, midY + 3.2, requiredZ);
-          _camLookTarget.set(0, midY - 0.4, 0);
+        // Preset 2 ('tactical' / 'cinematic' while aiming): 3/4 Tactical Diagonal View
+        const side = curTank.facing;
+        if (isPortrait) {
+          _camTargetPos.set(curTank.x - side * 14.2, curTank.y + 7.4, curTank.z + 3.4);
+          _camLookTarget.set(curTank.x + side * 6.2, midY - 0.8, oppTank.z * 0.4);
         } else {
-          const biasX = activeArcher.x * 0.05;
-          const requiredZ = Math.max(45, dist * 1.12);
-          _camTargetPos.set(biasX, midY + 3.0, requiredZ);
-          _camLookTarget.set(biasX * 0.3, midY - 0.3, 0);
+          const dist = currentProps.arena.distance;
+          _camTargetPos.set(curTank.x * 0.35 - side * 8.0, midY + 5.8, Math.max(42, dist * 0.78));
+          _camLookTarget.set(0, midY - 0.2, 0);
         }
       }
 
-      const dampFactor = 1 - Math.exp(-8.5 * dt);
-      camera.position.lerp(_camTargetPos, dampFactor);
-      currentCamLook.lerp(_camLookTarget, dampFactor);
+      const damp = 1 - Math.exp(-8.5 * dt);
+      camera.position.lerp(_camTargetPos, damp);
+      currentCamLook.lerp(_camLookTarget, damp);
 
       if (cameraTrauma > 0) {
-        cameraTrauma = Math.max(0, cameraTrauma - dt * 1.8);
+        cameraTrauma = Math.max(0, cameraTrauma - dt * 1.7);
         const shake = cameraTrauma * cameraTrauma * 0.65;
-        camera.position.x += Math.sin(elapsed * 55) * shake;
-        camera.position.y += Math.cos(elapsed * 63) * shake;
+        camera.position.x += Math.sin(elapsed * 52) * shake;
+        camera.position.y += Math.cos(elapsed * 46) * shake;
       }
 
       camera.lookAt(currentCamLook);
-      domeGroup.position.copy(camera.position);
       renderer.render(scene, camera);
+      afterDraw(tick);
+    };
 
-      if (isSoftwareGl) {
-        afterDraw(tick);
-      } else {
-        frameId = requestAnimationFrame(tick);
-      }
-    }
-
-    frameId = requestAnimationFrame(tick);
+    frameId = window.setTimeout(tick, 0);
 
     return () => {
       isUnmounted = true;
-      cancelAnimationFrame(frameId);
-      clearTimeout(frameId);
-      soundEngine.stopArrowWhistle();
+      window.clearTimeout(frameId);
+      soundEngine.stopShellWhistle();
       resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
       renderer.dispose();
-      if (renderer.domElement.parentNode === container) {
+      if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
     };
   }, []);
 
-  const prevSeedRef = useRef<number>(props.arena.seed);
+  // Rebuild 3D battlefield whenever arena seed/stage or selected tank model changes
   useEffect(() => {
-    if (props.arena.seed !== prevSeedRef.current) {
-      prevSeedRef.current = props.arena.seed;
-      rebuildSceneArenaRef.current?.(props.arena, props.archers);
+    if (rebuildSceneArenaRef.current) {
+      rebuildSceneArenaRef.current(props.arena, props.tanks);
     }
-  }, [props.arena, props.archers]);
+  }, [props.arena, props.tanks[0].model.id, props.tanks[1].model.id]);
 
+  // Trigger shell launch when shotTrigger increments
   useEffect(() => {
     if (props.shotTrigger && props.shotTrigger.shotId !== lastShotIdRef.current) {
       lastShotIdRef.current = props.shotTrigger.shotId;
-      launchArrowInternalRef.current?.(props.shotTrigger);
+      launchShellInternalRef.current?.(props.shotTrigger);
     }
   }, [props.shotTrigger]);
 
   return (
     <div
       ref={mountRef}
-      data-testid="arena-canvas-container"
-      className="fixed inset-0 w-screen h-screen overflow-hidden cursor-crosshair"
+      className="fixed inset-0 w-screen h-screen overflow-hidden cursor-crosshair touch-none"
+      aria-label="میدان نبرد سه‌بعدی جنگ تانک‌ها"
     />
   );
 };

@@ -1,128 +1,124 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  calculateHitDamage,
-  checkArcherCollision,
-  computeAIShot,
-  computeTrajectoryPreview,
-  generateArenaConfig,
-  getBowLaunchOrigin,
-  simulateFullShot,
-  stepArrowPhysics,
+  TANK_CATALOG,
+  SHELL_CATALOG,
+  TRAJECTORY_PREVIEW_MAX_METERS,
+  checkTankHitbox,
+  computeAITankTurn,
+  computeShortTrajectoryPreview,
+  generateBattlefieldConfig,
+  selectEnemyTankForStage,
+  stepProjectile,
   terrainHeightAt,
-  type ArcherState,
-} from './physics';
+  type TankCombatState,
+} from './physics.ts';
 
-test('trajectory preview strictly caps length between 3 and 5 meters', () => {
-  const points = computeTrajectoryPreview({ x: -20, y: 2 }, 45, 80, 1, 3.5, 4.2);
-  assert.ok(points.length >= 4, 'should return multiple dashed preview points');
-  let totalDist = 0;
-  for (let i = 1; i < points.length; i++) {
-    totalDist += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+function createDummyTank(id: 1 | 2, x: number, y: number, modelIdx = 0, shellIdx = 0): TankCombatState {
+  const model = TANK_CATALOG[modelIdx];
+  const shell = SHELL_CATALOG[shellIdx];
+  return {
+    id,
+    name: id === 1 ? 'تانک بازیکن' : 'تانک دشمن',
+    model,
+    shell,
+    x,
+    y,
+    z: 0,
+    slopeAngle: 0,
+    facing: id === 1 ? 1 : -1,
+    turretYawRad: 0,
+    barrelAngleDeg: 40,
+    powerPct: 75,
+    hp: 100,
+    maxHp: 100,
+    moveFuel: model.moveFuelMax,
+    maxMoveFuel: model.moveFuelMax,
+    tracksDamaged: false,
+    shotsFired: 0,
+    hitsLanded: 0,
+    critHits: 0,
+    lastLandingX: null,
+  };
+}
+
+test('Tank catalog has 10 models with 3 free unlocked and 7 escalating coin prices', () => {
+  assert.equal(TANK_CATALOG.length, 10);
+  const freeTanks = TANK_CATALOG.filter((t) => t.price === 0);
+  assert.equal(freeTanks.length, 3);
+
+  for (let i = 3; i < TANK_CATALOG.length; i++) {
+    assert.ok(TANK_CATALOG[i].price > TANK_CATALOG[i - 1].price, 'Tank prices should strictly increase');
   }
-  assert.ok(totalDist >= 3.0 && totalDist <= 4.5, `Expected 3-5m preview, got ${totalDist.toFixed(2)}m`);
+  assert.equal(SHELL_CATALOG.length, 4);
+  assert.equal(SHELL_CATALOG[0].price, 0);
 });
 
-test('hitboxes and damage match Headshot (70-100%), Body (30-40%), and Limbs (15-20%) specs', () => {
-  const head = calculateHitDamage('head', 26);
-  const body = calculateHitDamage('body', 26);
-  const limbs = calculateHitDamage('limbs', 26);
+test('Short trajectory preview next to tank barrel strictly stays between 3 and 5 meters', () => {
+  const tank = createDummyTank(1, -28, 1.5);
+  const points = computeShortTrajectoryPreview(tank, 4.5, TRAJECTORY_PREVIEW_MAX_METERS);
+  assert.ok(points.length >= 2);
 
-  assert.equal(head.isCritical, true);
-  assert.ok(head.damage >= 70 && head.damage <= 100, `Headshot damage ${head.damage} out of [70..100]`);
-  assert.ok(body.damage >= 30 && body.damage <= 40, `Body damage ${body.damage} out of [30..40]`);
-  assert.ok(limbs.damage >= 15 && limbs.damage <= 20, `Limbs damage ${limbs.damage} out of [15..20]`);
-
-  const target: ArcherState = {
-    id: 2,
-    name: 'Target',
-    x: 20,
-    y: 1.5,
-    facing: -1,
-    hp: 100,
-    maxHp: 100,
-    angleDeg: 45,
-    powerPct: 70,
-    shotsFired: 0,
-    hitsLanded: 0,
-    headshots: 0,
-    lastLandingX: null,
-  };
-
-  const headHit = checkArcherCollision(20, 1.5 + 2.05, target, 25);
-  assert.equal(headHit?.hitZone, 'head');
-  assert.equal(headHit?.isCritical, true);
-
-  const bodyHit = checkArcherCollision(20, 1.5 + 1.45, target, 25);
-  assert.equal(bodyHit?.hitZone, 'body');
-
-  const legHit = checkArcherCollision(20, 1.5 + 0.5, target, 25);
-  assert.equal(legHit?.hitZone, 'limbs');
+  let length = 0;
+  for (let i = 1; i < points.length; i++) {
+    length += Math.hypot(
+      points[i].x - points[i - 1].x,
+      points[i].y - points[i - 1].y,
+      points[i].z - points[i - 1].z
+    );
+  }
+  assert.ok(length >= 3.0 && length <= 5.01, `Expected 3..5m preview length, got ${length}`);
 });
 
-test('wind physics accelerates projectile horizontally and gravity pulls downward', () => {
-  const noWind = stepArrowPhysics({ x: 0, y: 10, vx: 15, vy: 15 }, 0, 0.5);
-  const tailwind = stepArrowPhysics({ x: 0, y: 10, vx: 15, vy: 15 }, 8, 0.5);
-  const headwind = stepArrowPhysics({ x: 0, y: 10, vx: 15, vy: 15 }, -8, 0.5);
+test('Tank hitboxes distinguish Turret (critical), Hull (medium), and Tracks (low damage)', () => {
+  const target = createDummyTank(2, 28, 0, 0, 0);
+  const attacker = createDummyTank(1, -28, 0, 0, 0);
 
-  assert.ok(tailwind.x > noWind.x, 'Positive wind should push projectile further right');
-  assert.ok(headwind.x < noWind.x, 'Negative wind should slow projectile moving right');
-  assert.ok(noWind.vy < 15, 'Gravity should reduce vertical velocity');
+  const turretHit = checkTankHitbox(28, 1.75, 0, target, attacker);
+  assert.ok(turretHit);
+  assert.equal(turretHit.hitZone, 'turret');
+
+  const hullHit = checkTankHitbox(28, 0.95, 0, target, attacker);
+  assert.ok(hullHit);
+  assert.equal(hullHit.hitZone, 'hull');
+
+  const tracksHit = checkTankHitbox(28, 0.3, 0, target, attacker);
+  assert.ok(tracksHit);
+  assert.equal(tracksHit.hitZone, 'tracks');
+
+  assert.ok(turretHit.damage > hullHit.damage);
+  assert.ok(hullHit.damage > tracksHit.damage);
 });
 
-test('terrain height variation creates uneven platforms and destructible obstacles', () => {
-  const arena = generateArenaConfig(12345);
-  const leftY = terrainHeightAt(-arena.distance * 0.5, arena);
-  const rightY = terrainHeightAt(arena.distance * 0.5, arena);
+test('Battlefield generator creates distinct stage biomes, obstacles, and supply crates', () => {
+  const stage1 = generateBattlefieldConfig(101, 1);
+  const stage2 = generateBattlefieldConfig(101, 2);
 
-  assert.ok(Math.abs(leftY - rightY) >= 1.0, 'Archers should stand on uneven terrain elevations');
-  assert.ok(arena.obstacles.length >= 3, 'Arena should include destructible obstacles between archers');
+  assert.notEqual(stage1.biome, stage2.biome);
+  assert.ok(stage1.distance >= 54);
+  assert.ok(stage1.obstacles.length >= 3);
+  assert.equal(stage1.crates.length, 2);
+
+  const yLeft = terrainHeightAt(-stage1.distance * 0.5, stage1);
+  const yCenter = terrainHeightAt(0, stage1);
+  assert.notEqual(yLeft, yCenter);
 });
 
-test('AI difficulty tiers behave distinctly and Hard AI converges on target', () => {
-  const arena = generateArenaConfig(42);
-  // Clear obstacles for pure ballistic convergence check
-  arena.obstacles.forEach((o) => (o.destroyed = true));
+test('Enemy tank selection and AI ballistic solver scale with stage progression', () => {
+  const enemyStage1 = selectEnemyTankForStage(0, 1);
+  const enemyStage6 = selectEnemyTankForStage(0, 6);
+  assert.ok(enemyStage6.index > enemyStage1.index);
 
-  const p1: ArcherState = {
-    id: 1,
-    name: 'Player 1',
-    x: -arena.distance * 0.5,
-    y: terrainHeightAt(-arena.distance * 0.5, arena),
-    facing: 1,
-    hp: 100,
-    maxHp: 100,
-    angleDeg: 45,
-    powerPct: 70,
-    shotsFired: 0,
-    hitsLanded: 0,
-    headshots: 0,
-    lastLandingX: null,
-  };
+  const arena = generateBattlefieldConfig(2026, 3);
+  const p1 = createDummyTank(1, -arena.distance * 0.5, terrainHeightAt(-arena.distance * 0.5, arena));
+  const ai = createDummyTank(2, arena.distance * 0.5, terrainHeightAt(arena.distance * 0.5, arena), enemyStage6.index);
 
-  const ai: ArcherState = {
-    id: 2,
-    name: 'AI Archer',
-    x: arena.distance * 0.5,
-    y: terrainHeightAt(arena.distance * 0.5, arena),
-    facing: -1,
-    hp: 100,
-    maxHp: 100,
-    angleDeg: 45,
-    powerPct: 70,
-    shotsFired: 1, // Second shot -> Hard AI locks on
-    hitsLanded: 0,
-    headshots: 0,
-    lastLandingX: null,
-  };
+  const decision = computeAITankTurn(ai, p1, -3.5, arena, 5, 999);
+  assert.ok(decision.barrelAngleDeg >= 8 && decision.barrelAngleDeg <= 75);
+  assert.ok(decision.powerPct >= 22 && decision.powerPct <= 100);
 
-  const wind = 4.5;
-  const hardShot = computeAIShot(ai, p1, wind, arena, 'hard', 99);
-  const hardSim = simulateFullShot(ai, p1, hardShot.angleDeg, hardShot.powerPct, wind, arena);
-
-  assert.ok(
-    hardSim.hitResult.hitType === 'archer' || hardSim.closestDistToTargetBody < 1.2,
-    `Hard AI should hit or pass within 1.2m of target, got ${hardSim.closestDistToTargetBody.toFixed(2)}m`
-  );
-  assert.ok(getBowLaunchOrigin(ai).y > ai.y);
+  const p0 = { x: 0, y: 10, z: 0, vx: 20, vy: 12, vz: 0, t: 0 };
+  const pNext = stepProjectile(p0, 0.1, 6.0);
+  assert.ok(pNext.vx > p0.vx);
+  assert.ok(pNext.vy < p0.vy);
 });

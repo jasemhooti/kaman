@@ -1,947 +1,732 @@
 import * as THREE from 'three';
-import {
-  terrainHeightAt,
-  type ArenaConfig,
-  type ArcherState,
-  type DestructibleObstacle,
-  type WeatherType,
+import type {
+  BiomeType,
+  DestructibleObstacle,
+  SupplyCrate,
+  TankModelSpec,
 } from './physics';
 
-export interface RagdollLimb {
-  mesh: THREE.Object3D;
-  vx: number;
-  vy: number;
-  vz: number;
-  rx: number;
-  ry: number;
-  rz: number;
-  groundOffset: number;
-}
-
-export interface ArcherRig {
+export interface TankRig {
   root: THREE.Group;
-  hips: THREE.Group;
-  torso: THREE.Group;
-  head: THREE.Group;
-  cape: THREE.Mesh;
-  leftLeg: THREE.Group;
-  rightLeg: THREE.Group;
-  bowArm: THREE.Group;
-  drawArm: THREE.Group;
-  bowString: THREE.Line;
-  bowStringPositions: Float32Array;
-  nockedArrow: THREE.Group;
-  hitFlashMaterials: THREE.MeshStandardMaterial[];
-  baseColors: number[];
-  flashTimer: number;
-  ragdollActive: boolean;
-  ragdollLimbs: RagdollLimb[];
+  hullGroup: THREE.Group;
+  turretYawGroup: THREE.Group;
+  turretMeshGroup: THREE.Group;
+  barrelElevationGroup: THREE.Group;
+  barrelRecoilGroup: THREE.Group;
+  muzzleFlashMesh: THREE.Mesh;
+  wheels: THREE.Mesh[];
+  hitFlashTimer: number;
+  recoilOffset: number;
+  destroyed: boolean;
+  // Turret blow-off physics state when HP reaches 0
+  turretBlownOff: boolean;
+  flyingTurret: {
+    mesh: THREE.Group;
+    vx: number;
+    vy: number;
+    vz: number;
+    rx: number;
+    ry: number;
+    rz: number;
+  } | null;
 }
 
 export interface ObstacleRig {
   id: string;
+  kind: DestructibleObstacle['kind'];
   group: THREE.Group;
   flashTimer: number;
-  materials: THREE.MeshStandardMaterial[];
-  baseColors: number[];
 }
 
-export function detectSoftwareWebGL(): boolean {
-  try {
-    const gl = document.createElement('canvas').getContext('webgl2');
-    if (!gl) return true;
-    const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-    const gpu = String(gl.getParameter(param));
-    gl.getExtension('WEBGL_lose_context')?.loseContext();
-    return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-  } catch {
-    return true;
-  }
+export interface CrateRig {
+  id: string;
+  kind: SupplyCrate['kind'];
+  group: THREE.Group;
 }
 
 /**
- * Rich multi-layered procedural texture generator for terrain strata, wood staves, and stone masonry
+ * Generates high-detail procedural textures for tank armor, steel tracks, bunkers, and terrain biomes.
  */
-export function createProceduralGrainTexture(
+export function createProceduralTexture(
   renderer: THREE.WebGLRenderer,
   baseHex: string,
   accentHex: string,
-  isColorMap: boolean,
-  pattern: 'terrain' | 'wood' | 'stone' = 'terrain'
+  style: 'armor' | 'terrain' | 'concrete' | 'tracks' = 'armor'
 ): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
 
-  // Base gradient fill
-  const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, baseHex);
-  grad.addColorStop(0.5, accentHex);
-  grad.addColorStop(1, baseHex);
-  ctx.fillStyle = grad;
+  ctx.fillStyle = baseHex;
   ctx.fillRect(0, 0, 256, 256);
 
-  if (pattern === 'stone') {
-    // Ashlar stone block courses
-    ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
-    ctx.lineWidth = 3;
-    const rows = 8;
-    const rowH = 256 / rows;
-    for (let r = 0; r < rows; r++) {
-      const y = r * rowH;
+  if (style === 'armor') {
+    // Brushed rolled homogeneous steel armor with subtle camo patches & rivets
+    ctx.fillStyle = accentHex;
+    for (let i = 0; i < 18; i++) {
+      ctx.globalAlpha = 0.14;
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(256, y);
-      ctx.stroke();
-      const cols = 4;
-      const colW = 256 / cols;
-      const offset = (r % 2) * (colW * 0.5);
-      for (let c = 0; c <= cols; c++) {
-        const x = (c * colW + offset) % 256;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x, y + rowH);
-        ctx.stroke();
-      }
+      ctx.ellipse(
+        (i * 67) % 256,
+        (i * 109) % 256,
+        28 + (i % 3) * 14,
+        16 + (i % 4) * 10,
+        (i * 0.6) % Math.PI,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
     }
-  } else if (pattern === 'wood') {
-    // Vertical stave planks & wood grain fibers
-    ctx.strokeStyle = 'rgba(20, 10, 4, 0.42)';
+    // Armor panel seams and rivets
+    ctx.globalAlpha = 0.28;
+    ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = 2;
-    for (let x = 0; x < 256; x += 32) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, 256);
-      ctx.stroke();
+    ctx.strokeRect(8, 8, 240, 240);
+    ctx.beginPath();
+    ctx.moveTo(0, 128);
+    ctx.lineTo(256, 128);
+    ctx.stroke();
+
+    ctx.fillStyle = '#cbd5e1';
+    for (let x = 20; x < 240; x += 36) {
+      ctx.fillRect(x, 14, 3, 3);
+      ctx.fillRect(x, 238, 3, 3);
+    }
+  } else if (style === 'tracks') {
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = '#475569';
+    for (let y = 0; y < 256; y += 16) {
+      ctx.fillRect(4, y + 2, 248, 9);
+    }
+  } else if (style === 'concrete') {
+    ctx.fillStyle = accentHex;
+    for (let y = 0; y < 256; y += 32) {
+      ctx.globalAlpha = 0.22;
+      ctx.fillRect(0, y, 256, 2);
+    }
+    for (let i = 0; i < 400; i++) {
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = i % 2 === 0 ? '#0f172a' : '#e2e8f0';
+      ctx.fillRect((i * 53) % 256, (i * 89) % 256, 4, 4);
+    }
+  } else {
+    // Terrain grain
+    for (let i = 0; i < 650; i++) {
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = i % 2 === 0 ? accentHex : '#ffffff';
+      ctx.fillRect((i * 73) % 256, (i * 41) % 256, 6, 3);
     }
   }
 
-  // Fine surface micro-relief noise
-  ctx.fillStyle = accentHex;
-  for (let i = 0; i < 420; i++) {
-    const x = (i * 53) % 256;
-    const y = (i * 97) % 256;
-    const w = 6 + (i % 18);
-    const h = 2 + (i % 5);
-    ctx.globalAlpha = 0.1 + (i % 5) * 0.035;
-    ctx.fillRect(x, y, w, h);
-  }
-
-  // Highlight flecks
-  ctx.fillStyle = '#ffffff';
-  for (let i = 0; i < 160; i++) {
-    const x = (i * 71) % 256;
-    const y = (i * 43) % 256;
-    ctx.globalAlpha = 0.05 + (i % 3) * 0.025;
-    ctx.fillRect(x, y, 4 + (i % 8), 2);
-  }
-
+  ctx.globalAlpha = 1.0;
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  if (isColorMap) {
-    tex.colorSpace = THREE.SRGBColorSpace;
-  }
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
   return tex;
 }
 
 /**
- * Procedural Atmospheric Sky Dome with Sunset/Twilight Horizon Glow & Sun/Moon Disc
+ * Builds a realistic multi-part 3D Tank Rig (Chassis, Sloped Glacis, ERA Blocks, Roadwheels, Tracks,
+ * Rotating Turret, Cupola, Antenna, Single/Dual Recoil Barrels, and Muzzle Flash).
  */
-export function createSkyDome(): {
-  domeGroup: THREE.Group;
-  updateSkyWeather: (weather: WeatherType, elapsed: number) => void;
-} {
-  const domeGroup = new THREE.Group();
-
-  const vertexShader = `
-    varying vec3 vWorldPosition;
-    void main() {
-      vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-      vWorldPosition = worldPosition.xyz;
-      gl_Position = projectionMatrix * viewMatrix * worldPosition;
-    }
-  `;
-
-  const fragmentShader = `
-    uniform vec3 topColor;
-    uniform vec3 midColor;
-    uniform vec3 bottomColor;
-    uniform vec3 sunDir;
-    uniform vec3 sunColor;
-    varying vec3 vWorldPosition;
-
-    void main() {
-      vec3 dir = normalize(vWorldPosition);
-      float h = clamp(dir.y, 0.0, 1.0);
-      vec3 col = mix(bottomColor, midColor, smoothstep(0.0, 0.28, h));
-      col = mix(col, topColor, smoothstep(0.28, 0.85, h));
-
-      // Sun / Moon atmospheric corona glow
-      float sunAmt = max(dot(dir, normalize(sunDir)), 0.0);
-      col += sunColor * pow(sunAmt, 12.0) * 0.48;
-      col += sunColor * smoothstep(0.996, 0.9995, sunAmt) * 1.35;
-
-      gl_FragColor = vec4(col, 1.0);
-    }
-  `;
-
-  const uniforms = {
-    topColor: { value: new THREE.Color(0x0b132b) },
-    midColor: { value: new THREE.Color(0x1e2952) },
-    bottomColor: { value: new THREE.Color(0xd97706) },
-    sunDir: { value: new THREE.Vector3(0.2, 0.34, -0.9) },
-    sunColor: { value: new THREE.Color(0xfbbf24) },
-  };
-
-  const skyGeo = new THREE.SphereGeometry(210, 24, 16);
-  const skyMat = new THREE.ShaderMaterial({
-    vertexShader,
-    fragmentShader,
-    uniforms,
-    side: THREE.BackSide,
-    depthWrite: false,
-  });
-
-  const skyMesh = new THREE.Mesh(skyGeo, skyMat);
-  domeGroup.add(skyMesh);
-
-  const updateSkyWeather = (weather: WeatherType, elapsed: number) => {
-    const pulse = Math.sin(elapsed * 0.5) * 0.03;
-    if (weather === 'dust') {
-      uniforms.topColor.value.setHex(0x271712);
-      uniforms.midColor.value.setHex(0x7c2d12);
-      uniforms.bottomColor.value.setHex(0xf59e0b);
-      uniforms.sunColor.value.setHex(0xfef08a);
-    } else if (weather === 'rain') {
-      uniforms.topColor.value.setHex(0x060b16);
-      uniforms.midColor.value.setHex(0x1e293b);
-      uniforms.bottomColor.value.setHex(0x38bdf8);
-      uniforms.sunColor.value.setHex(0x93c5fd);
-    } else {
-      uniforms.topColor.value.setHex(0x091128);
-      uniforms.midColor.value.setHex(0x26234e);
-      uniforms.bottomColor.value.setHex(0xea580c);
-      uniforms.sunColor.value.setHex(0xfde047);
-    }
-    uniforms.sunDir.value.set(0.15 + pulse, 0.32, -0.92);
-  };
-
-  return { domeGroup, updateSkyWeather };
-}
-
-/**
- * Create a 3D Volumetric Low-Poly Cloud Cluster
- */
-export function createCloudCluster(): THREE.Group {
-  const group = new THREE.Group();
-  const cloudMat = new THREE.MeshStandardMaterial({
-    color: 0xf8fafc,
-    roughness: 0.92,
-    metalness: 0.02,
-    transparent: true,
-    opacity: 0.82,
-  });
-
-  const puffs = [
-    { x: 0, y: 0, z: 0, sx: 2.8, sy: 1.3, sz: 1.6 },
-    { x: -1.8, y: -0.2, z: 0.2, sx: 1.9, sy: 1.0, sz: 1.3 },
-    { x: 1.9, y: -0.15, z: -0.1, sx: 2.1, sy: 1.1, sz: 1.4 },
-    { x: 0.6, y: 0.55, z: 0.1, sx: 1.7, sy: 1.0, sz: 1.2 },
-  ];
-
-  const geo = new THREE.DodecahedronGeometry(1, 1);
-  for (const p of puffs) {
-    const m = new THREE.Mesh(geo, cloudMat);
-    m.position.set(p.x, p.y, p.z);
-    m.scale.set(p.sx, p.sy, p.sz);
-    group.add(m);
-  }
-  return group;
-}
-
-/**
- * Create a flickering 3D Fire Brazier / Torch stand placed near each archer bastion
- */
-export function createTorchBrazier(): {
-  group: THREE.Group;
-  flameMesh: THREE.Mesh;
-} {
-  const group = new THREE.Group();
-  const ironMat = new THREE.MeshStandardMaterial({
-    color: 0x1e293b,
-    roughness: 0.4,
-    metalness: 0.85,
-  });
-  const coalMat = new THREE.MeshStandardMaterial({
-    color: 0xdc2626,
-    emissive: 0xea580c,
-    emissiveIntensity: 1.2,
-    roughness: 0.6,
-  });
-  const flameMat = new THREE.MeshStandardMaterial({
-    color: 0xfde047,
-    emissive: 0xf97316,
-    emissiveIntensity: 2.2,
-    roughness: 0.2,
-  });
-
-  const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.22, 1.15, 8), ironMat);
-  stand.position.y = 0.575;
-  group.add(stand);
-
-  const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.16, 0.28, 10), ironMat);
-  bowl.position.y = 1.18;
-  group.add(bowl);
-
-  const coals = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 6), coalMat);
-  coals.scale.y = 0.45;
-  coals.position.y = 1.28;
-  group.add(coals);
-
-  const flameMesh = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.72, 7), flameMat);
-  flameMesh.position.y = 1.62;
-  group.add(flameMesh);
-
-  return { group, flameMesh };
-}
-
-/**
- * Create a tall Battle Standard / War Banner that waves with windSpeed
- */
-export function createWarBanner(isPlayer1: boolean): {
-  group: THREE.Group;
-  clothMesh: THREE.Mesh;
-} {
-  const group = new THREE.Group();
-  const poleMat = new THREE.MeshStandardMaterial({
-    color: 0xd97706,
-    roughness: 0.3,
-    metalness: 0.8,
-  });
-  const clothMat = new THREE.MeshStandardMaterial({
-    color: isPlayer1 ? 0x2563eb : 0xdc2626,
-    emissive: isPlayer1 ? 0x1e3a8a : 0x7f1d1d,
-    emissiveIntensity: 0.25,
-    roughness: 0.65,
-    side: THREE.DoubleSide,
-  });
-
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 3.6, 8), poleMat);
-  pole.position.y = 1.8;
-  group.add(pole);
-
-  const finial = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), poleMat);
-  finial.position.y = 3.68;
-  group.add(finial);
-
-  const clothGeo = new THREE.PlaneGeometry(1.15, 0.62, 6, 2);
-  clothGeo.translate(0.58, 0, 0);
-  const clothMesh = new THREE.Mesh(clothGeo, clothMat);
-  clothMesh.position.set(0, 3.18, 0);
-  group.add(clothMesh);
-
-  return { group, clothMesh };
-}
-
-/**
- * Soft radial contact shadow plane placed at y = 0.015 beneath grounded objects
- */
-export function createContactShadowDisc(radius: number): THREE.Mesh {
-  const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d')!;
-  const grad = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
-  grad.addColorStop(0, 'rgba(0,0,0,0.62)');
-  grad.addColorStop(0.6, 'rgba(0,0,0,0.26)');
-  grad.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 64, 64);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  const geo = new THREE.CircleGeometry(radius, 20);
-  geo.rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshBasicMaterial({
-    map: tex,
-    transparent: true,
-    depthWrite: false,
-    opacity: 0.9,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.y = 0.018;
-  return mesh;
-}
-
-/**
- * Build a high-visibility 3D Arrow mesh group (wooden shaft, blazing steel/fire tip, 3 fletching feathers)
- */
-export function createArrowMesh(): THREE.Group {
-  const group = new THREE.Group();
-
-  // Wooden shaft along +X axis
-  const shaftGeo = new THREE.CylinderGeometry(0.026, 0.026, 1.22, 8);
-  shaftGeo.rotateZ(-Math.PI / 2);
-  const shaftMat = new THREE.MeshStandardMaterial({
-    color: 0xe2c799,
-    roughness: 0.55,
-    metalness: 0.12,
-  });
-  const shaft = new THREE.Mesh(shaftGeo, shaftMat);
-  group.add(shaft);
-
-  // Broadhead steel tip + glowing ember ring at +0.66m
-  const tipGeo = new THREE.ConeGeometry(0.068, 0.26, 6);
-  tipGeo.rotateZ(-Math.PI / 2);
-  const tipMat = new THREE.MeshStandardMaterial({
-    color: 0xf8fafc,
-    emissive: 0x38bdf8,
-    emissiveIntensity: 0.35,
-    roughness: 0.18,
-    metalness: 0.92,
-  });
-  const tip = new THREE.Mesh(tipGeo, tipMat);
-  tip.position.x = 0.66;
-  group.add(tip);
-
-  // Glowing tail fletching feathers at -0.52m
-  const featherGeo = new THREE.BoxGeometry(0.26, 0.11, 0.018);
-  const featherMat = new THREE.MeshStandardMaterial({
-    color: 0xfbbf24,
-    emissive: 0xf59e0b,
-    emissiveIntensity: 0.65,
-    roughness: 0.3,
-  });
-  for (let i = 0; i < 3; i++) {
-    const f = new THREE.Mesh(featherGeo, featherMat);
-    f.position.x = -0.5;
-    f.rotation.x = (i * Math.PI * 2) / 3;
-    group.add(f);
-  }
-
-  return group;
-}
-
-/**
- * Build a 12-part composite 3D Archer model with articulated limbs, royal cape, Persian helmet, quiver, bow & ragdoll support
- */
-export function createCompositeArcher(isPlayer1: boolean, isSoftwareGl: boolean): ArcherRig {
+export function createTankRig(
+  model: TankModelSpec,
+  facing: 1 | -1,
+  renderer: THREE.WebGLRenderer
+): TankRig {
   const root = new THREE.Group();
-  const hitFlashMaterials: THREE.MeshStandardMaterial[] = [];
-  const baseColors: number[] = [];
+  const s = model.scale;
+  root.scale.set(s, s, s);
 
-  const registerMat = (mat: THREE.MeshStandardMaterial) => {
-    hitFlashMaterials.push(mat);
-    baseColors.push(mat.color.getHex());
-    return mat;
-  };
+  const armorTex = createProceduralTexture(renderer, model.hullColor, model.turretColor, 'armor');
+  const trackTex = createProceduralTexture(renderer, '#1e293b', '#334155', 'tracks');
 
-  root.add(createContactShadowDisc(1.05));
+  const hullMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(model.hullColor),
+    map: armorTex,
+    roughness: 0.46,
+    metalness: 0.42,
+  });
 
-  const primaryArmorHex = isPlayer1 ? 0x2563eb : 0xdc2626;
-  const trimBrassHex = isPlayer1 ? 0xfbbf24 : 0xf59e0b;
-  const clothHex = isPlayer1 ? 0x0f172a : 0x18181b;
-  const capeHex = isPlayer1 ? 0x1d4ed8 : 0x991b1b;
-  const leatherHex = 0x5c3a21;
-  const skinHex = 0xd6a77a;
+  const turretMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(model.turretColor),
+    map: armorTex,
+    roughness: 0.42,
+    metalness: 0.48,
+  });
 
-  const armorMat = registerMat(
-    new THREE.MeshStandardMaterial({
-      color: primaryArmorHex,
-      roughness: 0.28,
-      metalness: 0.58,
-    })
-  );
-  const brassMat = registerMat(
-    new THREE.MeshStandardMaterial({
-      color: trimBrassHex,
-      roughness: 0.18,
-      metalness: 0.9,
-    })
-  );
-  const clothMat = registerMat(
-    new THREE.MeshStandardMaterial({
-      color: clothHex,
-      roughness: 0.8,
-      metalness: 0.08,
-    })
-  );
-  const capeMat = registerMat(
-    new THREE.MeshStandardMaterial({
-      color: capeHex,
-      roughness: 0.72,
-      metalness: 0.05,
-      side: THREE.DoubleSide,
-    })
-  );
-  const leatherMat = registerMat(
-    new THREE.MeshStandardMaterial({
-      color: leatherHex,
-      roughness: 0.68,
-      metalness: 0.12,
-    })
-  );
-  const skinMat = registerMat(
-    new THREE.MeshStandardMaterial({
-      color: skinHex,
-      roughness: 0.6,
-      metalness: 0.05,
-    })
-  );
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(model.accentColor),
+    roughness: 0.32,
+    metalness: 0.65,
+  });
 
-  const hips = new THREE.Group();
-  hips.position.y = 0.92;
-  root.add(hips);
+  const darkSteelMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.45,
+    metalness: 0.72,
+  });
 
-  // 1 & 2: Left & Right Legs + Armored Greaves
-  const makeLeg = (zOffset: number) => {
-    const legGroup = new THREE.Group();
-    legGroup.position.set(0, 0, zOffset);
+  const trackMat = new THREE.MeshStandardMaterial({
+    color: 0x27272a,
+    map: trackTex,
+    roughness: 0.78,
+    metalness: 0.35,
+  });
 
-    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.115, 0.52, 10), clothMat);
-    thigh.position.y = -0.25;
-    thigh.castShadow = !isSoftwareGl;
-    legGroup.add(thigh);
+  const hullGroup = new THREE.Group();
+  root.add(hullGroup);
 
-    const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.125, 0.44, 10), leatherMat);
-    boot.position.y = -0.68;
-    boot.castShadow = !isSoftwareGl;
-    legGroup.add(boot);
+  // 1. Left & Right Track Assemblies + 12 Roadwheels
+  const wheels: THREE.Mesh[] = [];
+  const wheelGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.26, 14);
+  wheelGeo.rotateX(Math.PI / 2);
+  const hubGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.28, 10);
+  hubGeo.rotateX(Math.PI / 2);
 
-    const kneeGuard = new THREE.Mesh(new THREE.SphereGeometry(0.125, 10, 8), brassMat);
-    kneeGuard.position.set(0.055, -0.46, 0);
-    legGroup.add(kneeGuard);
+  for (const sideZ of [-1.05, 1.05]) {
+    // Track Belt Box + Rounded Ends
+    const trackBelt = new THREE.Mesh(new THREE.BoxGeometry(3.75, 0.56, 0.46), trackMat);
+    trackBelt.position.set(0, 0.32, sideZ);
+    trackBelt.castShadow = true;
+    trackBelt.receiveShadow = true;
+    hullGroup.add(trackBelt);
 
-    return legGroup;
-  };
+    // Armored Side Skirts over upper tracks
+    const sideSkirt = new THREE.Mesh(new THREE.BoxGeometry(3.85, 0.28, 0.52), hullMat);
+    sideSkirt.position.set(0, 0.66, sideZ);
+    sideSkirt.castShadow = true;
+    hullGroup.add(sideSkirt);
 
-  const leftLeg = makeLeg(0.16);
-  const rightLeg = makeLeg(-0.16);
-  hips.add(leftLeg);
-  hips.add(rightLeg);
+    // Accent stripe on side skirt
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.07, 0.54), accentMat);
+    stripe.position.set(0, 0.68, sideZ);
+    hullGroup.add(stripe);
 
-  // 3: Torso Cuirass, Tassets & Belt
-  const torso = new THREE.Group();
-  hips.add(torso);
-
-  const chestMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.29, 0.235, 0.84, 12), armorMat);
-  chestMesh.position.y = 0.42;
-  chestMesh.castShadow = !isSoftwareGl;
-  torso.add(chestMesh);
-
-  // Golden Chest Plate Medallion
-  const chestEmblem = new THREE.Mesh(new THREE.OctahedronGeometry(0.11, 0), brassMat);
-  chestEmblem.position.set(0.24, 0.52, 0);
-  torso.add(chestEmblem);
-
-  const beltMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.13, 12), leatherMat);
-  beltMesh.position.y = 0.08;
-  torso.add(beltMesh);
-
-  const buckleMesh = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.15, 0.19), brassMat);
-  buckleMesh.position.set(0.24, 0.08, 0);
-  torso.add(buckleMesh);
-
-  // 4: Flowing Back Cape
-  const capeGeo = new THREE.PlaneGeometry(0.55, 1.15, 2, 4);
-  capeGeo.translate(0, -0.55, 0);
-  const cape = new THREE.Mesh(capeGeo, capeMat);
-  cape.position.set(-0.24, 0.78, 0);
-  cape.rotation.y = Math.PI / 2;
-  cape.rotation.x = 0.22;
-  torso.add(cape);
-
-  // 5: Layered Pauldrons (Shoulder Guards)
-  for (const side of [-1, 1]) {
-    const pauldron = new THREE.Mesh(
-      new THREE.SphereGeometry(0.175, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.62),
-      brassMat
-    );
-    pauldron.position.set(0, 0.78, side * 0.29);
-    torso.add(pauldron);
+    // 6 Roadwheels per side
+    for (let w = 0; w < 6; w++) {
+      const wx = -1.45 + w * 0.58;
+      const wheel = new THREE.Mesh(wheelGeo, darkSteelMat);
+      wheel.position.set(wx, 0.32, sideZ + (sideZ > 0 ? 0.12 : -0.12));
+      const hub = new THREE.Mesh(hubGeo, accentMat);
+      wheel.add(hub);
+      hullGroup.add(wheel);
+      wheels.push(wheel);
+    }
   }
 
-  // 6: Back Quiver with Feathered Arrows
-  const quiverGroup = new THREE.Group();
-  quiverGroup.position.set(-0.22, 0.52, -0.19);
-  quiverGroup.rotation.z = 0.32;
-  const quiverTube = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.075, 0.56, 10), leatherMat);
-  quiverGroup.add(quiverTube);
-  for (let i = 0; i < 3; i++) {
-    const qShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.36, 6), brassMat);
-    qShaft.position.set((i - 1) * 0.03, 0.28, (i % 2) * 0.02);
-    quiverGroup.add(qShaft);
+  // 2. Main Armored Hull Core
+  const lowerHull = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.58, 1.78), hullMat);
+  lowerHull.position.set(0, 0.68, 0);
+  lowerHull.castShadow = true;
+  lowerHull.receiveShadow = true;
+  hullGroup.add(lowerHull);
+
+  // Sloped Front Glacis Plate
+  const glacis = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.42, 1.72), hullMat);
+  glacis.position.set(facing * 1.42, 0.84, 0);
+  glacis.rotation.z = -facing * 0.28;
+  glacis.castShadow = true;
+  hullGroup.add(glacis);
+
+  // Rear Engine Deck & Exhaust Louvers
+  const engineDeck = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.18, 1.5), darkSteelMat);
+  engineDeck.position.set(-facing * 1.15, 0.99, 0);
+  hullGroup.add(engineDeck);
+
+  // Headlight glow pods on front hull
+  const lightMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+  for (const lz of [-0.65, 0.65]) {
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.18), lightMat);
+    lamp.position.set(facing * 1.82, 0.88, lz);
+    hullGroup.add(lamp);
   }
-  torso.add(quiverGroup);
 
-  // 7: Articulated Head + Persian/Medieval Spangenhelm + Crown Rim + Plume
-  const head = new THREE.Group();
-  head.position.y = 0.92;
-  torso.add(head);
+  // 3. Rotating Turret Group
+  const turretYawGroup = new THREE.Group();
+  turretYawGroup.position.set(-facing * 0.12, 1.02, 0);
+  hullGroup.add(turretYawGroup);
 
-  const headSphere = new THREE.Mesh(new THREE.SphereGeometry(0.215, 14, 14), skinMat);
-  headSphere.position.y = 0.21;
-  headSphere.castShadow = !isSoftwareGl;
-  head.add(headSphere);
+  const turretMeshGroup = new THREE.Group();
+  turretYawGroup.add(turretMeshGroup);
 
-  const helmetRim = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.07, 14), brassMat);
-  helmetRim.position.y = 0.24;
-  head.add(helmetRim);
+  // Main Turret Body
+  const turretCore = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.64, 1.48), turretMat);
+  turretCore.position.set(0, 0.34, 0);
+  turretCore.castShadow = true;
+  turretCore.receiveShadow = true;
+  turretMeshGroup.add(turretCore);
 
-  const helmetDome = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.36, 14), brassMat);
-  helmetDome.position.y = 0.38;
-  helmetDome.castShadow = !isSoftwareGl;
-  head.add(helmetDome);
+  // Sloped Turret Front Cheeks (Composite Armor Wedge)
+  for (const cz of [-0.44, 0.44]) {
+    const cheek = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.56, 0.56), accentMat);
+    cheek.position.set(facing * 0.88, 0.34, cz);
+    cheek.rotation.y = facing * (cz > 0 ? -0.22 : 0.22);
+    cheek.castShadow = true;
+    turretMeshGroup.add(cheek);
+  }
 
-  const nasalBar = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.19, 0.045), brassMat);
-  nasalBar.position.set(0.215, 0.24, 0);
-  head.add(nasalBar);
+  // Commander Cupola Hatch & Radio Whip Antenna
+  const cupola = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.24, 12), darkSteelMat);
+  cupola.position.set(-facing * 0.35, 0.74, -0.32);
+  turretMeshGroup.add(cupola);
 
-  const plumeMat = registerMat(
-    new THREE.MeshStandardMaterial({
-      color: isPlayer1 ? 0x38bdf8 : 0xf87171,
-      emissive: isPlayer1 ? 0x0284c7 : 0xdc2626,
-      emissiveIntensity: 0.25,
-      roughness: 0.45,
-      metalness: 0.1,
-    })
-  );
-  const plume = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.36, 8), plumeMat);
-  plume.position.set(-0.08, 0.56, 0);
-  plume.rotation.z = 0.65;
-  head.add(plume);
+  const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, 1.35, 6), darkSteelMat);
+  antenna.position.set(-facing * 0.78, 1.25, 0.48);
+  turretMeshGroup.add(antenna);
 
-  // 8: Articulated Bow Arm + Composite Recurve Bow
-  const bowArm = new THREE.Group();
-  bowArm.position.set(0.06, 0.68, 0.24);
-  torso.add(bowArm);
+  // 4. Cannon Barrel Elevation & Recoil Group (Supports Single or Dual Barrels!)
+  const barrelElevationGroup = new THREE.Group();
+  barrelElevationGroup.position.set(facing * 0.85, 0.38, 0);
+  turretMeshGroup.add(barrelElevationGroup);
 
-  const foreArm = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.068, 0.52, 8), skinMat);
-  foreArm.rotation.z = -Math.PI / 2;
-  foreArm.position.x = 0.26;
-  bowArm.add(foreArm);
+  const barrelRecoilGroup = new THREE.Group();
+  barrelElevationGroup.add(barrelRecoilGroup);
 
-  const bracer = new THREE.Mesh(new THREE.CylinderGeometry(0.086, 0.078, 0.24, 8), brassMat);
-  bracer.rotation.z = -Math.PI / 2;
-  bracer.position.x = 0.34;
-  bowArm.add(bracer);
+  // Gun Mantlet
+  const mantlet = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.38, 0.76), darkSteelMat);
+  barrelRecoilGroup.add(mantlet);
 
-  const bowCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(0.46, 0.72, 0),
-    new THREE.Vector3(0.58, 0.47, 0),
-    new THREE.Vector3(0.66, 0.19, 0),
-    new THREE.Vector3(0.59, 0.0, 0),
-    new THREE.Vector3(0.66, -0.19, 0),
-    new THREE.Vector3(0.58, -0.47, 0),
-    new THREE.Vector3(0.46, -0.72, 0),
-  ]);
-  const bowGeo = new THREE.TubeGeometry(bowCurve, 24, 0.036, 8, false);
-  const bowMesh = new THREE.Mesh(bowGeo, brassMat);
-  bowArm.add(bowMesh);
+  const barrelOffsets = model.barrelCount === 2 ? [-0.22, 0.22] : [0];
+  for (const bz of barrelOffsets) {
+    // Main Barrel Tube
+    const tubeLen = 2.45;
+    const tubeGeo = new THREE.CylinderGeometry(0.095, 0.115, tubeLen, 14);
+    tubeGeo.rotateZ(Math.PI / 2);
+    const tube = new THREE.Mesh(tubeGeo, darkSteelMat);
+    tube.position.set(facing * (tubeLen * 0.5 + 0.15), 0, bz);
+    tube.castShadow = true;
+    barrelRecoilGroup.add(tube);
 
-  const bowGrip = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.046, 0.22, 8), leatherMat);
-  bowGrip.position.set(0.59, 0, 0);
-  bowArm.add(bowGrip);
+    // Bore Evacuator (Fume Extractor bulge mid-barrel)
+    const evacGeo = new THREE.CylinderGeometry(0.145, 0.145, 0.48, 14);
+    evacGeo.rotateZ(Math.PI / 2);
+    const evac = new THREE.Mesh(evacGeo, hullMat);
+    evac.position.set(facing * 1.25, 0, bz);
+    barrelRecoilGroup.add(evac);
 
-  // 9: Dynamic Bowstring
-  const bowStringPositions = new Float32Array([
-    0.46, 0.72, 0,
-    0.15, 0.0, 0,
-    0.46, -0.72, 0,
-  ]);
-  const stringGeo = new THREE.BufferGeometry();
-  stringGeo.setAttribute('position', new THREE.BufferAttribute(bowStringPositions, 3));
-  const stringMat = new THREE.LineBasicMaterial({ color: 0xf8fafc });
-  const bowString = new THREE.Line(stringGeo, stringMat);
-  bowArm.add(bowString);
+    // Muzzle Brake
+    const brakeGeo = new THREE.CylinderGeometry(0.15, 0.13, 0.32, 12);
+    brakeGeo.rotateZ(Math.PI / 2);
+    const brake = new THREE.Mesh(brakeGeo, accentMat);
+    brake.position.set(facing * (tubeLen + 0.22), 0, bz);
+    barrelRecoilGroup.add(brake);
+  }
 
-  // 10: Nocked Arrow inside the bow
-  const nockedArrow = createArrowMesh();
-  nockedArrow.position.set(0.32, 0, 0);
-  bowArm.add(nockedArrow);
-
-  // 11: Draw Arm
-  const drawArm = new THREE.Group();
-  drawArm.position.set(-0.04, 0.68, -0.24);
-  torso.add(drawArm);
-  const drawArmMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.068, 0.46, 8), armorMat);
-  drawArmMesh.rotation.z = -Math.PI / 2;
-  drawArmMesh.position.x = 0.2;
-  drawArm.add(drawArmMesh);
+  // Muzzle Blast Fireball Sphere (briefly visible upon firing)
+  const muzzleFlashGeo = new THREE.DodecahedronGeometry(0.55, 1);
+  const muzzleFlashMat = new THREE.MeshBasicMaterial({
+    color: 0xfef08a,
+    transparent: true,
+    opacity: 0.0,
+  });
+  const muzzleFlashMesh = new THREE.Mesh(muzzleFlashGeo, muzzleFlashMat);
+  muzzleFlashMesh.position.set(facing * 2.85, 0, 0);
+  barrelRecoilGroup.add(muzzleFlashMesh);
 
   return {
     root,
-    hips,
-    torso,
-    head,
-    cape,
-    leftLeg,
-    rightLeg,
-    bowArm,
-    drawArm,
-    bowString,
-    bowStringPositions,
-    nockedArrow,
-    hitFlashMaterials,
-    baseColors,
-    flashTimer: 0,
-    ragdollActive: false,
-    ragdollLimbs: [],
+    hullGroup,
+    turretYawGroup,
+    turretMeshGroup,
+    barrelElevationGroup,
+    barrelRecoilGroup,
+    muzzleFlashMesh,
+    wheels,
+    hitFlashTimer: 0,
+    recoilOffset: 0,
+    destroyed: false,
+    turretBlownOff: false,
+    flyingTurret: null,
   };
 }
 
 /**
- * Update archer aim pose + cape wind flutter
+ * Updates the tank's 3D barrel elevation angle, turret yaw, hull slope tilt, and recoil recovery.
  */
-export function updateArcherPose(
-  rig: ArcherRig,
-  archer: ArcherState,
-  isCurrentTurn: boolean,
-  elapsedTime: number,
-  windSpeed = 0
-) {
-  if (rig.ragdollActive) return;
+export function updateTankPose(
+  rig: TankRig,
+  facing: 1 | -1,
+  barrelAngleDeg: number,
+  turretYawRad: number,
+  slopeAngleRad: number,
+  dt: number
+): void {
+  if (rig.destroyed) return;
 
-  rig.root.position.set(archer.x, archer.y, 0);
-  rig.root.scale.x = archer.facing;
+  // Pitch hull to match terrain slope
+  rig.hullGroup.rotation.z = THREE.MathUtils.lerp(rig.hullGroup.rotation.z, slopeAngleRad, 1 - Math.exp(-10 * dt));
 
-  const breath = Math.sin(elapsedTime * 2.6 + archer.id * 1.7) * 0.025;
-  rig.torso.position.y = breath;
+  // Rotate turret horizontally
+  rig.turretYawGroup.rotation.y = THREE.MathUtils.lerp(
+    rig.turretYawGroup.rotation.y,
+    facing === 1 ? -turretYawRad : turretYawRad,
+    1 - Math.exp(-12 * dt)
+  );
 
-  // Cape billows with wind and breathing
-  rig.cape.rotation.x = 0.24 + Math.sin(elapsedTime * 4.2 + archer.id) * 0.08 + Math.abs(windSpeed) * 0.035;
+  // Elevate cannon barrel (clamped visually so barrel always points upward from horizontal)
+  const elevRad = (Math.max(4, Math.min(75, barrelAngleDeg)) * Math.PI) / 180;
+  rig.barrelElevationGroup.rotation.z = facing === 1 ? elevRad : -elevRad;
 
-  const targetRad = THREE.MathUtils.degToRad(archer.angleDeg);
-  rig.bowArm.rotation.z = targetRad;
-  rig.drawArm.rotation.z = targetRad * 0.85;
-  rig.head.rotation.z = targetRad * 0.45;
+  // Recover barrel recoil and fade muzzle flash
+  if (rig.recoilOffset > 0.001) {
+    rig.recoilOffset = Math.max(0, rig.recoilOffset - dt * 2.6);
+    rig.barrelRecoilGroup.position.x = -facing * rig.recoilOffset;
+  } else {
+    rig.barrelRecoilGroup.position.x = 0;
+  }
 
-  const pullRatio = isCurrentTurn ? (archer.powerPct - 10) / 90 : 0.15;
-  const stringPullX = 0.44 - pullRatio * 0.42;
-  rig.bowStringPositions[3] = stringPullX;
-  rig.bowStringPositions[4] = 0;
-  rig.bowStringPositions[5] = 0;
-  (rig.bowString.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-
-  rig.nockedArrow.position.x = stringPullX + 0.48;
-  rig.drawArm.position.x = stringPullX - 0.12;
-}
-
-/**
- * Activate multi-part Ragdoll physics when an archer is defeated
- */
-export function triggerArcherRagdoll(
-  rig: ArcherRig,
-  scene: THREE.Scene,
-  impactVx: number,
-  impactVy: number
-) {
-  if (rig.ragdollActive) return;
-  rig.ragdollActive = true;
-  rig.nockedArrow.visible = false;
-
-  const parts: Array<{ obj: THREE.Object3D; groundOffset: number; impulseScale: number }> = [
-    { obj: rig.torso, groundOffset: 0.35, impulseScale: 1.0 },
-    { obj: rig.head, groundOffset: 0.22, impulseScale: 1.45 },
-    { obj: rig.leftLeg, groundOffset: 0.18, impulseScale: 0.7 },
-    { obj: rig.rightLeg, groundOffset: 0.18, impulseScale: 0.7 },
-    { obj: rig.bowArm, groundOffset: 0.15, impulseScale: 1.25 },
-  ];
-
-  const worldPos = new THREE.Vector3();
-  const worldQuat = new THREE.Quaternion();
-
-  rig.ragdollLimbs = parts.map(({ obj, groundOffset, impulseScale }, idx) => {
-    obj.getWorldPosition(worldPos);
-    obj.getWorldQuaternion(worldQuat);
-    scene.attach(obj);
-    obj.position.copy(worldPos);
-    obj.quaternion.copy(worldQuat);
-
-    const dirSign = Math.sign(impactVx) || 1;
-    const speedMag = Math.min(14, Math.max(4, Math.hypot(impactVx, impactVy) * 0.32));
-
-    return {
-      mesh: obj,
-      vx: dirSign * speedMag * impulseScale + (idx - 2) * 0.9,
-      vy: (2.8 + idx * 0.65) * impulseScale,
-      vz: (idx % 2 === 0 ? 1 : -1) * (0.8 + idx * 0.3),
-      rx: (idx - 1.5) * 3.2,
-      ry: dirSign * 2.5,
-      rz: -dirSign * (4.0 + idx * 1.1),
-      groundOffset,
-    };
-  });
-}
-
-export function stepRagdollPhysics(rig: ArcherRig, arena: ArenaConfig, dt: number) {
-  if (!rig.ragdollActive) return;
-  for (const limb of rig.ragdollLimbs) {
-    limb.vy -= 9.81 * dt;
-    limb.mesh.position.x += limb.vx * dt;
-    limb.mesh.position.y += limb.vy * dt;
-    limb.mesh.position.z += limb.vz * dt;
-
-    limb.mesh.rotation.x += limb.rx * dt;
-    limb.mesh.rotation.y += limb.ry * dt;
-    limb.mesh.rotation.z += limb.rz * dt;
-
-    const floorY = terrainHeightAt(limb.mesh.position.x, arena) + limb.groundOffset;
-    if (limb.mesh.position.y <= floorY) {
-      limb.mesh.position.y = floorY;
-      limb.vy = Math.abs(limb.vy) * 0.28;
-      limb.vx *= 0.68;
-      limb.vz *= 0.68;
-      limb.rx *= 0.65;
-      limb.ry *= 0.65;
-      limb.rz *= 0.65;
-    }
+  const flashMat = rig.muzzleFlashMesh.material as THREE.MeshBasicMaterial;
+  if (flashMat.opacity > 0.01) {
+    flashMat.opacity = Math.max(0, flashMat.opacity - dt * 8.5);
+    const scale = 0.7 + flashMat.opacity * 0.9;
+    rig.muzzleFlashMesh.scale.set(scale, scale, scale);
   }
 }
 
 /**
- * Build composite 3D destructible obstacles (Wooden Barrel, Runic Boulder, Castle Wall)
+ * Detaches the 3D tank turret and launches it spinning into the air when HP reaches 0!
  */
-export function createCompositeObstacle(
+export function triggerTankExplosion(
+  rig: TankRig,
+  scene: THREE.Scene
+): void {
+  if (rig.turretBlownOff) return;
+  rig.destroyed = true;
+  rig.turretBlownOff = true;
+
+  // Scorch the tank hull dark charcoal
+  rig.hullGroup.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
+      child.material = child.material.clone();
+      child.material.color.setHex(0x18181b);
+      child.material.roughness = 0.92;
+    }
+  });
+
+  // Detach turretMeshGroup into world coordinates and launch upward
+  const worldPos = new THREE.Vector3();
+  const worldQuat = new THREE.Quaternion();
+  const worldScale = new THREE.Vector3();
+  rig.turretMeshGroup.updateWorldMatrix(true, false);
+  rig.turretMeshGroup.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+
+  rig.turretYawGroup.remove(rig.turretMeshGroup);
+  rig.turretMeshGroup.position.copy(worldPos);
+  rig.turretMeshGroup.quaternion.copy(worldQuat);
+  rig.turretMeshGroup.scale.copy(worldScale);
+  scene.add(rig.turretMeshGroup);
+
+  rig.flyingTurret = {
+    mesh: rig.turretMeshGroup,
+    vx: (Math.random() - 0.5) * 6.5,
+    vy: 11.5 + Math.random() * 3.5,
+    vz: (Math.random() - 0.5) * 4.5,
+    rx: (Math.random() - 0.5) * 7.0,
+    ry: (Math.random() - 0.5) * 6.0,
+    rz: (Math.random() - 0.5) * 8.0,
+  };
+}
+
+export function stepFlyingTurret(
+  rig: TankRig,
+  dt: number,
+  getGroundHeight: (x: number) => number
+): void {
+  const ft = rig.flyingTurret;
+  if (!ft) return;
+
+  ft.vy -= 9.81 * dt;
+  ft.mesh.position.x += ft.vx * dt;
+  ft.mesh.position.y += ft.vy * dt;
+  ft.mesh.position.z += ft.vz * dt;
+
+  ft.mesh.rotation.x += ft.rx * dt;
+  ft.mesh.rotation.y += ft.ry * dt;
+  ft.mesh.rotation.z += ft.rz * dt;
+
+  const groundY = getGroundHeight(ft.mesh.position.x) + 0.35;
+  if (ft.mesh.position.y < groundY) {
+    ft.mesh.position.y = groundY;
+    ft.vy = Math.abs(ft.vy) * 0.28;
+    ft.vx *= 0.62;
+    ft.vz *= 0.62;
+    ft.rx *= 0.5;
+    ft.ry *= 0.5;
+    ft.rz *= 0.5;
+  }
+}
+
+/**
+ * Creates a glowing 3D Artillery Shell Mesh.
+ */
+export function createShellMesh(colorHex = 0xf59e0b): THREE.Group {
+  const group = new THREE.Group();
+
+  const bodyGeo = new THREE.CylinderGeometry(0.11, 0.14, 0.65, 10);
+  bodyGeo.rotateZ(-Math.PI / 2);
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    metalness: 0.85,
+    roughness: 0.25,
+  });
+  group.add(new THREE.Mesh(bodyGeo, bodyMat));
+
+  const noseGeo = new THREE.ConeGeometry(0.11, 0.36, 10);
+  noseGeo.rotateZ(-Math.PI / 2);
+  const noseMat = new THREE.MeshBasicMaterial({ color: colorHex });
+  const nose = new THREE.Mesh(noseGeo, noseMat);
+  nose.position.set(0.48, 0, 0);
+  group.add(nose);
+
+  const glowGeo = new THREE.SphereGeometry(0.22, 8, 8);
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: colorHex,
+    transparent: true,
+    opacity: 0.55,
+  });
+  const glow = new THREE.Mesh(glowGeo, glowMat);
+  glow.position.set(-0.25, 0, 0);
+  group.add(glow);
+
+  return group;
+}
+
+/**
+ * Creates a 3D Supply Crate (First-Aid Heal Crate with Red/Green Cross or Gold Coin Crate).
+ */
+export function createSupplyCrateMesh(crate: SupplyCrate): CrateRig {
+  const group = new THREE.Group();
+  group.position.set(crate.x, crate.y + 0.55, crate.z);
+
+  if (crate.kind === 'heal') {
+    const boxMat = new THREE.MeshStandardMaterial({
+      color: 0xf8fafc,
+      roughness: 0.4,
+      metalness: 0.2,
+    });
+    const crossMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.95, 1.1), boxMat);
+    box.castShadow = true;
+    group.add(box);
+
+    // Glowing Green Medical Cross on front & top
+    const hBar = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.2, 1.14), crossMat);
+    const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.65, 1.14), crossMat);
+    group.add(hBar, vBar);
+  } else {
+    const boxMat = new THREE.MeshStandardMaterial({
+      color: 0xb45309,
+      roughness: 0.35,
+      metalness: 0.65,
+    });
+    const goldMat = new THREE.MeshStandardMaterial({
+      color: 0xfbbf24,
+      emissive: 0xd97706,
+      emissiveIntensity: 0.35,
+      roughness: 0.25,
+      metalness: 0.85,
+    });
+
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.9, 1.05), boxMat);
+    chest.castShadow = true;
+    group.add(chest);
+
+    const band = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.22, 1.1), goldMat);
+    band.position.y = 0.15;
+    group.add(band);
+  }
+
+  return {
+    id: crate.id,
+    kind: crate.kind,
+    group,
+  };
+}
+
+/**
+ * Creates a Destructible Battlefield Obstacle (Concrete Bunker, Explosive Fuel Tank, Jagged Rock, or Blast Wall).
+ */
+export function createObstacleRig(
   obs: DestructibleObstacle,
-  woodTex: THREE.CanvasTexture,
-  stoneTex: THREE.CanvasTexture,
-  isSoftwareGl: boolean
+  concreteTex: THREE.CanvasTexture
 ): ObstacleRig {
   const group = new THREE.Group();
-  group.position.set(obs.x, obs.y, 0);
-  group.add(createContactShadowDisc(obs.width * 0.75));
+  group.position.set(obs.x, obs.y, obs.z);
 
-  const materials: THREE.MeshStandardMaterial[] = [];
-  const baseColors: number[] = [];
-  const reg = (m: THREE.MeshStandardMaterial) => {
-    materials.push(m);
-    baseColors.push(m.color.getHex());
-    return m;
-  };
+  if (obs.kind === 'fuel_tank') {
+    const tankMat = new THREE.MeshStandardMaterial({
+      color: 0xdc2626,
+      roughness: 0.38,
+      metalness: 0.55,
+    });
+    const stripeMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
 
-  if (obs.kind === 'barrel') {
-    const staveMat = reg(
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: woodTex,
-        bumpMap: woodTex,
-        bumpScale: 0.06,
-        roughness: 0.72,
-        metalness: 0.08,
-      })
+    const cyl = new THREE.Mesh(
+      new THREE.CylinderGeometry(obs.width * 0.48, obs.width * 0.48, obs.height, 14),
+      tankMat
     );
-    const ironMat = reg(
-      new THREE.MeshStandardMaterial({
-        color: 0x334155,
-        roughness: 0.3,
-        metalness: 0.85,
-      })
-    );
+    cyl.position.y = obs.height * 0.5;
+    cyl.castShadow = true;
+    cyl.receiveShadow = true;
+    group.add(cyl);
 
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(obs.width * 0.45, obs.width * 0.43, obs.height, 14),
-      staveMat
+    const hazardBand = new THREE.Mesh(
+      new THREE.CylinderGeometry(obs.width * 0.5, obs.width * 0.5, obs.height * 0.22, 14),
+      stripeMat
     );
-    body.position.y = obs.height * 0.5;
-    body.castShadow = !isSoftwareGl;
-    body.receiveShadow = !isSoftwareGl;
+    hazardBand.position.y = obs.height * 0.55;
+    group.add(hazardBand);
+  } else if (obs.kind === 'bunker') {
+    const bunkerMat = new THREE.MeshStandardMaterial({
+      color: 0x64748b,
+      map: concreteTex,
+      roughness: 0.82,
+      metalness: 0.18,
+    });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(obs.width, obs.height * 0.82, obs.depth), bunkerMat);
+    body.position.y = obs.height * 0.41;
+    body.castShadow = true;
+    body.receiveShadow = true;
     group.add(body);
 
-    for (const hRatio of [0.2, 0.5, 0.8]) {
-      const hoop = new THREE.Mesh(
-        new THREE.CylinderGeometry(obs.width * 0.47, obs.width * 0.47, 0.09, 14),
-        ironMat
-      );
-      hoop.position.y = obs.height * hRatio;
-      group.add(hoop);
-    }
-  } else if (obs.kind === 'stone') {
-    const rockMat = reg(
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: stoneTex,
-        bumpMap: stoneTex,
-        bumpScale: 0.08,
-        roughness: 0.82,
-        metalness: 0.12,
-      })
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(obs.width * 1.08, obs.height * 0.22, obs.depth * 1.08),
+      bunkerMat
     );
-    const crystalMat = reg(
-      new THREE.MeshStandardMaterial({
-        color: 0x38bdf8,
-        emissive: 0x0284c7,
-        emissiveIntensity: 0.45,
-        roughness: 0.2,
-        metalness: 0.5,
-      })
+    roof.position.y = obs.height * 0.88;
+    roof.castShadow = true;
+    group.add(roof);
+
+    // Firing slit
+    const slit = new THREE.Mesh(
+      new THREE.BoxGeometry(obs.width * 0.7, 0.28, obs.depth * 1.03),
+      new THREE.MeshBasicMaterial({ color: 0x090d16 })
     );
-
-    const baseRock = new THREE.Mesh(new THREE.DodecahedronGeometry(obs.width * 0.56, 1), rockMat);
-    baseRock.scale.set(1.0, obs.height / (obs.width * 1.05), 0.92);
-    baseRock.position.y = obs.height * 0.48;
-    baseRock.castShadow = !isSoftwareGl;
-    baseRock.receiveShadow = !isSoftwareGl;
-    group.add(baseRock);
-
-    const sideSpire = new THREE.Mesh(new THREE.DodecahedronGeometry(obs.width * 0.35, 0), rockMat);
-    sideSpire.position.set(obs.width * 0.28, obs.height * 0.28, 0.25);
-    group.add(sideSpire);
-
-    const crystalShard = new THREE.Mesh(new THREE.OctahedronGeometry(obs.width * 0.22, 0), crystalMat);
-    crystalShard.scale.set(0.6, 1.6, 0.6);
-    crystalShard.position.set(0, obs.height * 0.92, 0);
-    group.add(crystalShard);
+    slit.position.y = obs.height * 0.58;
+    group.add(slit);
+  } else if (obs.kind === 'wall') {
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0x78716c,
+      map: concreteTex,
+      roughness: 0.85,
+      metalness: 0.15,
+    });
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(obs.width, obs.height, obs.depth), wallMat);
+    wall.position.y = obs.height * 0.5;
+    wall.castShadow = true;
+    wall.receiveShadow = true;
+    group.add(wall);
   } else {
-    const masonryMat = reg(
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: stoneTex,
-        bumpMap: stoneTex,
-        bumpScale: 0.08,
-        roughness: 0.78,
-        metalness: 0.14,
-      })
-    );
-    const trimMat = reg(
-      new THREE.MeshStandardMaterial({
-        color: 0xb45309,
-        roughness: 0.55,
-        metalness: 0.35,
-      })
-    );
-
-    const wallMain = new THREE.Mesh(
-      new THREE.BoxGeometry(obs.width, obs.height * 0.82, 2.4),
-      masonryMat
-    );
-    wallMain.position.y = obs.height * 0.41;
-    wallMain.castShadow = !isSoftwareGl;
-    wallMain.receiveShadow = !isSoftwareGl;
-    group.add(wallMain);
-
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(obs.width * 1.08, 0.24, 2.5), trimMat);
-    beam.position.y = obs.height * 0.78;
-    group.add(beam);
-
-    for (const zOff of [-0.75, 0, 0.75]) {
-      const merlon = new THREE.Mesh(
-        new THREE.BoxGeometry(obs.width * 0.94, obs.height * 0.22, 0.52),
-        masonryMat
-      );
-      merlon.position.set(0, obs.height * 0.91, zOff);
-      group.add(merlon);
-    }
+    const rockMat = new THREE.MeshStandardMaterial({
+      color: 0x57534e,
+      map: concreteTex,
+      roughness: 0.9,
+      metalness: 0.08,
+      flatShading: true,
+    });
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(obs.width * 0.58, 1), rockMat);
+    rock.position.y = obs.height * 0.46;
+    rock.scale.set(1.0, obs.height / obs.width, 0.95);
+    rock.castShadow = true;
+    rock.receiveShadow = true;
+    group.add(rock);
   }
 
   return {
     id: obs.id,
+    kind: obs.kind,
     group,
     flashTimer: 0,
-    materials,
-    baseColors,
   };
+}
+
+/**
+ * Creates a GLSL Atmospheric Sky Dome that adapts its colors to the current stage biome.
+ */
+export function createBiomeSkyDome(): {
+  domeGroup: THREE.Group;
+  updateBiomeSky: (biome: BiomeType) => void;
+} {
+  const domeGroup = new THREE.Group();
+
+  const skyGeo = new THREE.SphereGeometry(240, 28, 18);
+  const skyUniforms = {
+    topColor: { value: new THREE.Color(0x0f172a) },
+    midColor: { value: new THREE.Color(0x475569) },
+    bottomColor: { value: new THREE.Color(0xd97706) },
+    sunDir: { value: new THREE.Vector3(0.28, 0.24, -0.92).normalize() },
+    sunColor: { value: new THREE.Color(0xfef08a) },
+  };
+
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: skyUniforms,
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 midColor;
+      uniform vec3 bottomColor;
+      uniform vec3 sunDir;
+      uniform vec3 sunColor;
+      varying vec3 vWorldPos;
+      void main() {
+        vec3 dir = normalize(vWorldPos);
+        float h = clamp(dir.y, 0.0, 1.0);
+        vec3 col = mix(bottomColor, midColor, smoothstep(0.0, 0.28, h));
+        col = mix(col, topColor, smoothstep(0.28, 0.88, h));
+        float sunAmt = max(dot(dir, sunDir), 0.0);
+        col += sunColor * pow(sunAmt, 14.0) * 0.42;
+        col += sunColor * smoothstep(0.996, 0.9995, sunAmt) * 0.85;
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+
+  domeGroup.add(new THREE.Mesh(skyGeo, skyMat));
+
+  const updateBiomeSky = (biome: BiomeType) => {
+    if (biome === 'desert') {
+      skyUniforms.topColor.value.setHex(0x1e3a8a);
+      skyUniforms.midColor.value.setHex(0xb45309);
+      skyUniforms.bottomColor.value.setHex(0xfbbf24);
+      skyUniforms.sunColor.value.setHex(0xfef08a);
+    } else if (biome === 'snow') {
+      skyUniforms.topColor.value.setHex(0x0f172a);
+      skyUniforms.midColor.value.setHex(0x38bdf8);
+      skyUniforms.bottomColor.value.setHex(0xe0f2fe);
+      skyUniforms.sunColor.value.setHex(0xffffff);
+    } else if (biome === 'industrial') {
+      skyUniforms.topColor.value.setHex(0x090d16);
+      skyUniforms.midColor.value.setHex(0x334155);
+      skyUniforms.bottomColor.value.setHex(0x64748b);
+      skyUniforms.sunColor.value.setHex(0x94a3b8);
+    } else if (biome === 'volcanic') {
+      skyUniforms.topColor.value.setHex(0x180909);
+      skyUniforms.midColor.value.setHex(0x7f1d1d);
+      skyUniforms.bottomColor.value.setHex(0xea580c);
+      skyUniforms.sunColor.value.setHex(0xf97316);
+    } else {
+      // night radar outpost
+      skyUniforms.topColor.value.setHex(0x020617);
+      skyUniforms.midColor.value.setHex(0x0f172a);
+      skyUniforms.bottomColor.value.setHex(0x1e293b);
+      skyUniforms.sunColor.value.setHex(0x38bdf8);
+    }
+  };
+
+  return { domeGroup, updateBiomeSky };
 }

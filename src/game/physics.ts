@@ -1,606 +1,929 @@
-export type GameMode = '1p' | '2p';
-export type AIDifficulty = 'easy' | 'medium' | 'hard';
-export type WeatherType = 'clear' | 'dust' | 'rain';
-export type HitZone = 'head' | 'body' | 'limbs';
-export type ObstacleKind = 'barrel' | 'stone' | 'wall';
+export type BiomeType = 'desert' | 'snow' | 'industrial' | 'volcanic' | 'night';
+export type HitZone = 'turret' | 'hull' | 'tracks';
+export type CameraPreset = 'tactical' | 'turret' | 'side' | 'drone' | 'cinematic';
 
-export interface Vec3 {
+export interface TankModelSpec {
+  id: string;
+  index: number;
+  name: string;
+  codeName: string;
+  price: number; // 0 for the first 3 unlocked tanks
+  armorMultiplier: number;
+  damageMultiplier: number;
+  moveFuelMax: number; // meters per turn
+  barrelCount: 1 | 2;
+  hullColor: string;
+  turretColor: string;
+  accentColor: string;
+  scale: number;
+  description: string;
+}
+
+export interface ShellSpec {
+  id: string;
+  name: string;
+  price: number; // 0 for default shell; unlimited ammo once unlocked
+  minTankIndex: number;
+  damageMultiplier: number;
+  muzzleVelocityMultiplier: number;
+  blastRadius: number;
+  colorHex: number;
+  badgeColor: string;
+  description: string;
+}
+
+export interface TankCombatState {
+  id: 1 | 2;
+  name: string;
+  model: TankModelSpec;
+  shell: ShellSpec;
   x: number;
   y: number;
   z: number;
+  slopeAngle: number;
+  facing: 1 | -1; // 1 = facing +X, -1 = facing -X
+  turretYawRad: number; // horizontal aim offset
+  barrelAngleDeg: number; // elevation angle (5 to 75 deg)
+  powerPct: number; // 20 to 100%
+  hp: number;
+  maxHp: number;
+  moveFuel: number;
+  maxMoveFuel: number;
+  tracksDamaged: boolean;
+  shotsFired: number;
+  hitsLanded: number;
+  critHits: number;
+  lastLandingX: number | null;
 }
 
 export interface DestructibleObstacle {
   id: string;
-  kind: ObstacleKind;
+  kind: 'bunker' | 'fuel_tank' | 'rock' | 'wall';
   x: number;
-  y: number; // bottom center Y on terrain
+  y: number;
+  z: number;
   width: number;
   height: number;
+  depth: number;
   hp: number;
   maxHp: number;
   destroyed: boolean;
 }
 
-export interface ArcherState {
-  id: 1 | 2;
-  name: string;
-  x: number;
-  y: number; // ground elevation at archer's feet
-  facing: 1 | -1; // 1 = facing right (+X), -1 = facing left (-X)
-  hp: number;
-  maxHp: number;
-  angleDeg: number; // 5 to 85 degrees
-  powerPct: number; // 15 to 100 percent
-  shotsFired: number;
-  hitsLanded: number;
-  headshots: number;
-  lastLandingX: number | null;
-}
-
-export interface ArenaConfig {
-  seed: number;
-  distance: number;
-  leftHillHeight: number;
-  rightHillHeight: number;
-  valleyDepth: number;
-  ridgeCenterOffset: number;
-  ridgeHeight: number;
-  obstacles: DestructibleObstacle[];
-}
-
-export interface ArrowStepResult {
+export interface SupplyCrate {
+  id: string;
+  kind: 'heal' | 'coins';
   x: number;
   y: number;
+  z: number;
+  collected: boolean;
+  value: number; // +25% HP or +50 coins
+}
+
+export interface BattlefieldConfig {
+  seed: number;
+  stageNumber: number;
+  biome: BiomeType;
+  biomeTitle: string;
+  distance: number; // 54m to 78m between tanks
+  leftHillHeight: number;
+  rightHillHeight: number;
+  centerRidgeHeight: number;
+  centerRidgeX: number;
+  roughnessFreq: number;
+  roughnessAmp: number;
+  obstacles: DestructibleObstacle[];
+  crates: SupplyCrate[];
+}
+
+export interface TrajectoryPoint {
+  x: number;
+  y: number;
+  z: number;
   vx: number;
   vy: number;
-  angleRad: number;
+  vz: number;
+  t: number;
 }
 
 export interface HitDetectionResult {
-  hitType: 'none' | 'terrain' | 'obstacle' | 'archer';
+  hitType: 'none' | 'tank' | 'obstacle' | 'crate' | 'ground';
+  targetTankId?: 1 | 2;
   hitZone?: HitZone;
-  damage?: number;
-  isCritical?: boolean;
-  targetArcherId?: 1 | 2;
   obstacleId?: string;
-  impactPoint: { x: number; y: number };
+  crateId?: string;
+  damage?: number;
+  impactPoint: { x: number; y: number; z: number };
 }
 
 export const GRAVITY = 9.81;
-export const MIN_VELOCITY = 10;
-export const MAX_VELOCITY = 33;
-// Wind acceleration coefficient: windSpeed (-10..+10 m/s) applies horizontal acceleration
-export const WIND_ACCEL_FACTOR = 0.52;
-
-// Archer hitbox dimensions (pivot at bottom-center y = archer.y)
-export const ARCHER_TOTAL_HEIGHT = 2.35;
-export const ARCHER_LIMB_TOP = 1.05; // 0.0 to 1.05m = legs/lower limbs
-export const ARCHER_BODY_TOP = 1.82; // 1.05 to 1.82m = torso/chest (plus arms on outer radius)
-export const ARCHER_HEAD_TOP = 2.38; // 1.82 to 2.38m = head
-export const ARCHER_BOW_OFFSET_Y = 1.52;
-export const ARCHER_BOW_OFFSET_X = 0.45;
+export const MIN_MUZZLE_SPEED = 14;
+export const MAX_MUZZLE_SPEED = 42;
+// Short trajectory guide line right next to the tank barrel (4.5 meters)
+export const TRAJECTORY_PREVIEW_MAX_METERS = 4.6;
 
 /**
- * Deterministic pseudo-random generator for reproducible arena seeds & unit tests
+ * 10 Realistic Tank Models:
+ * First 3 are unlocked for free (price: 0).
+ * Next 7 are purchasable with coins from cheap to expensive.
  */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return function () {
-    let t = (a += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+export const TANK_CATALOG: TankModelSpec[] = [
+  {
+    id: 'zulfiqar_1',
+    index: 0,
+    name: 'ذوالفقار سبک',
+    codeName: 'ZULFIQAR MK-I',
+    price: 0,
+    armorMultiplier: 1.0,
+    damageMultiplier: 1.0,
+    moveFuelMax: 5.5,
+    barrelCount: 1,
+    hullColor: '#4d5d42',
+    turretColor: '#3f4d36',
+    accentColor: '#eab308',
+    scale: 1.0,
+    description: 'تانک چابک خط مقدم با مصرف سوخت بهینه و چرخش سریع برجک',
+  },
+  {
+    id: 'saeqeh_2',
+    index: 1,
+    name: 'صاعقه صحرا',
+    codeName: 'SAEQEH DESERT',
+    price: 0,
+    armorMultiplier: 1.04,
+    damageMultiplier: 1.04,
+    moveFuelMax: 5.0,
+    barrelCount: 1,
+    hullColor: '#9a7b4f',
+    turretColor: '#7d623c',
+    accentColor: '#f59e0b',
+    scale: 1.03,
+    description: 'تانک استتار صحرایی با پایداری بالا روی تپه‌های شنی',
+  },
+  {
+    id: 'aghrab_3',
+    index: 2,
+    name: 'عقرب زرهی',
+    codeName: 'SCORPION AFV',
+    price: 0,
+    armorMultiplier: 1.08,
+    damageMultiplier: 1.07,
+    moveFuelMax: 5.2,
+    barrelCount: 1,
+    hullColor: '#475569',
+    turretColor: '#334155',
+    accentColor: '#38bdf8',
+    scale: 1.05,
+    description: 'شاسی پهن زرهی با سیستم تعلیق مقاوم در برابر موج انفجار',
+  },
+  {
+    id: 'babr_4',
+    index: 3,
+    name: 'ببر فولادی',
+    codeName: 'STEEL TIGER',
+    price: 150,
+    armorMultiplier: 1.15,
+    damageMultiplier: 1.15,
+    moveFuelMax: 5.6,
+    barrelCount: 1,
+    hullColor: '#3f6212',
+    turretColor: '#365314',
+    accentColor: '#84cc16',
+    scale: 1.08,
+    description: 'زره کامپوزیت چندلایه و توپ ۱۱۰ میلی‌متری دوربرد',
+  },
+  {
+    id: 'tondar_5',
+    index: 4,
+    name: 'تندر واکنش‌گر',
+    codeName: 'THUNDER ERA',
+    price: 320,
+    armorMultiplier: 1.24,
+    damageMultiplier: 1.25,
+    moveFuelMax: 5.8,
+    barrelCount: 1,
+    hullColor: '#52525b',
+    turretColor: '#3f3f46',
+    accentColor: '#f97316',
+    scale: 1.1,
+    description: 'مجهز به بلوک‌های زره واکنشی انفجاری و موتور توربودیزل',
+  },
+  {
+    id: 'shahab_6',
+    index: 5,
+    name: 'شهاب سنگین',
+    codeName: 'SHAHAB HEAVY',
+    price: 550,
+    armorMultiplier: 1.35,
+    damageMultiplier: 1.36,
+    moveFuelMax: 6.0,
+    barrelCount: 1,
+    hullColor: '#1e3a8a',
+    turretColor: '#172554',
+    accentColor: '#60a5fa',
+    scale: 1.13,
+    description: 'تانک سنگین کالیبر ۱۲۵ میلی‌متری با قدرت تخریب سنگر بالا',
+  },
+  {
+    id: 'azhdaha_7',
+    index: 6,
+    name: 'اژدهای سرخ',
+    codeName: 'CRIMSON DRAGON',
+    price: 850,
+    armorMultiplier: 1.48,
+    damageMultiplier: 1.48,
+    moveFuelMax: 6.2,
+    barrelCount: 2,
+    hullColor: '#7f1d1d',
+    turretColor: '#5c1414',
+    accentColor: '#f87171',
+    scale: 1.16,
+    description: 'برجک دو لول هم‌زمان با شاسی فوق‌سنگین و زره مقاوم',
+  },
+  {
+    id: 'titan_8',
+    index: 7,
+    name: 'غول تیتانیوم',
+    codeName: 'TITAN MAMMOTH',
+    price: 1250,
+    armorMultiplier: 1.62,
+    damageMultiplier: 1.62,
+    moveFuelMax: 6.5,
+    barrelCount: 2,
+    hullColor: '#334155',
+    turretColor: '#1e293b',
+    accentColor: '#22d3ee',
+    scale: 1.2,
+    description: 'بدنه تیتانیومی ضدنفوذ با دو توپ موازی کالیبر سنگین',
+  },
+  {
+    id: 'shabgard_9',
+    index: 8,
+    name: 'شکارچی شب',
+    codeName: 'NIGHT STALKER',
+    price: 1800,
+    armorMultiplier: 1.78,
+    damageMultiplier: 1.78,
+    moveFuelMax: 7.0,
+    barrelCount: 2,
+    hullColor: '#18181b',
+    turretColor: '#09090b',
+    accentColor: '#a855f7',
+    scale: 1.22,
+    description: 'تانک نسل پنجم رادارگریز با سامانه نشانه‌گیری لیزری',
+  },
+  {
+    id: 'emperor_10',
+    index: 9,
+    name: 'امپراتور میدان',
+    codeName: 'IMPERIAL OVERLORD',
+    price: 2500,
+    armorMultiplier: 1.98,
+    damageMultiplier: 1.95,
+    moveFuelMax: 7.5,
+    barrelCount: 2,
+    hullColor: '#78350f',
+    turretColor: '#451a03',
+    accentColor: '#fbbf24',
+    scale: 1.26,
+    description: 'قوی‌ترین ابرتانک دو لول بازی با زره طلایی-تیتانیوم و قدرت ویرانگر',
+  },
+];
+
+/**
+ * 4 Tank Shell Types (Unlimited Ammo once unlocked in the Shell Shop)
+ */
+export const SHELL_CATALOG: ShellSpec[] = [
+  {
+    id: 'shell_standard',
+    name: 'گلوله استاندارد جنگی (APHE)',
+    price: 0,
+    minTankIndex: 0,
+    damageMultiplier: 1.0,
+    muzzleVelocityMultiplier: 1.0,
+    blastRadius: 2.3,
+    colorHex: 0xf59e0b,
+    badgeColor: '#f59e0b',
+    description: 'مهمات نامحدود پایه با تعادل عالی بین سرعت و قدرت انفجار',
+  },
+  {
+    id: 'shell_ap_sabot',
+    name: 'گلوله ضدزره نفوذی (Sabot AP)',
+    price: 200,
+    minTankIndex: 0,
+    damageMultiplier: 1.22,
+    muzzleVelocityMultiplier: 1.08,
+    blastRadius: 2.5,
+    colorHex: 0x38bdf8,
+    badgeColor: '#38bdf8',
+    description: 'سرعت دهانه بالاتر و +۲۲٪ تخریب بیشتر روی زره و برجک تانک (مهمات نامحدود)',
+  },
+  {
+    id: 'shell_he_heavy',
+    name: 'گلوله انفجار شدید (Heavy HE)',
+    price: 450,
+    minTankIndex: 2,
+    damageMultiplier: 1.38,
+    muzzleVelocityMultiplier: 0.96,
+    blastRadius: 3.5,
+    colorHex: 0xf97316,
+    badgeColor: '#f97316',
+    description: 'موج انفجار وسیع و +۳۸٪ قدرت تخریب روی تانک و سنگرها (مهمات نامحدود)',
+  },
+  {
+    id: 'shell_plasma',
+    name: 'گلوله حرارتی پلاسما (Plasma)',
+    price: 900,
+    minTankIndex: 4,
+    damageMultiplier: 1.6,
+    muzzleVelocityMultiplier: 1.05,
+    blastRadius: 4.2,
+    colorHex: 0xa855f7,
+    badgeColor: '#a855f7',
+    description: 'قوی‌ترین گلوله حرارتی با +۶۰٪ تخریب مرگبار و شعاع انفجار گسترده (مهمات نامحدود)',
+  },
+];
+
+export function seededRandom(seed: number): () => number {
+  let s = seed % 2147483647;
+  if (s <= 0) s += 2147483646;
+  return () => {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
   };
 }
 
-/**
- * Convert power percentage (0..100) to initial launch speed (m/s)
- */
-export function powerToSpeed(powerPct: number): number {
-  const clamped = Math.max(10, Math.min(100, powerPct));
-  return MIN_VELOCITY + ((clamped - 10) / 90) * (MAX_VELOCITY - MIN_VELOCITY);
-}
+const BIOME_LIST: Array<{ biome: BiomeType; title: string }> = [
+  { biome: 'desert', title: 'صحرای طلایی · طوفان شن' },
+  { biome: 'snow', title: 'ارتفاعات برفی · کولاک کوهستان' },
+  { biome: 'industrial', title: 'منطقه صنعتی · باران اسیدی' },
+  { biome: 'volcanic', title: 'دره آتشفشانی · بارش خاکستر' },
+  { biome: 'night', title: 'پایگاه راداری شبانه · مه جنگی' },
+];
 
 /**
- * Compute continuous ground elevation at world coordinate X
+ * Generates a unique, larger 3D battlefield map for each stage with hills, obstacles, and supply crates.
  */
-export function terrainHeightAt(x: number, arena: ArenaConfig): number {
-  const halfDist = arena.distance * 0.5;
+export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber: number = 1): BattlefieldConfig {
+  const rng = seededRandom(seed + stageNumber * 7919);
+  const biomeEntry = BIOME_LIST[(stageNumber - 1) % BIOME_LIST.length];
 
-  // Left platform plateau around -halfDist
-  const leftDist = Math.abs(x - -halfDist);
-  const leftPlateau = Math.exp(-Math.pow(leftDist / 5.2, 2)) * arena.leftHillHeight;
+  // Larger battlefield distance: 54m to 76m
+  const distance = Math.round(54 + rng() * 20 + Math.min(10, stageNumber * 1.2));
+  const leftHillHeight = Number(((rng() - 0.35) * 4.8).toFixed(2));
+  const rightHillHeight = Number(((rng() - 0.35) * 4.8).toFixed(2));
+  const centerRidgeHeight = Number((0.8 + rng() * 3.4).toFixed(2));
+  const centerRidgeX = Number(((rng() - 0.5) * 14).toFixed(2));
+  const roughnessFreq = Number((0.12 + rng() * 0.08).toFixed(3));
+  const roughnessAmp = Number((0.28 + rng() * 0.38).toFixed(2));
 
-  // Right platform plateau around +halfDist
-  const rightDist = Math.abs(x - halfDist);
-  const rightPlateau = Math.exp(-Math.pow(rightDist / 5.2, 2)) * arena.rightHillHeight;
-
-  // Central ridge or valley between platforms
-  const centerDist = Math.abs(x - arena.ridgeCenterOffset);
-  const centerRidge = Math.exp(-Math.pow(centerDist / 6.5, 2)) * arena.ridgeHeight;
-
-  // Gentle rolling dunes/rocky floor
-  const undulation =
-    Math.sin(x * 0.19 + arena.seed * 0.1) * 0.35 +
-    Math.cos(x * 0.08 - arena.seed * 0.05) * 0.25;
-
-  // Flatten directly under the archers' feet (1.8m radius) so they stand flush
-  const leftFlatFactor = Math.min(1, Math.max(0, (leftDist - 1.6) / 2.5));
-  const rightFlatFactor = Math.min(1, Math.max(0, (rightDist - 1.6) / 2.5));
-  const flatMask = leftFlatFactor * rightFlatFactor;
-
-  return leftPlateau + rightPlateau + (centerRidge + undulation - arena.valleyDepth * 0.3) * flatMask;
-}
-
-/**
- * Generate a complete arena with uneven terrain heights and destructible obstacles
- */
-export function generateArenaConfig(seed = Date.now()): ArenaConfig {
-  const rand = mulberry32(seed);
-  const distance = 38 + rand() * 12; // 38m to 50m between archers
-  const leftHillHeight = -1.0 + rand() * 4.8; // -1.0m to +3.8m
-  const rightHillHeight = -1.0 + rand() * 4.8;
-  // Ensure noticeable height difference (at least 1.4m difference) for interesting angle math
-  const adjustedRightHeight =
-    Math.abs(rightHillHeight - leftHillHeight) < 1.4
-      ? leftHillHeight + (rand() > 0.5 ? 2.2 : -1.8)
-      : rightHillHeight;
-
-  const valleyDepth = 0.5 + rand() * 1.5;
-  const ridgeCenterOffset = (rand() - 0.5) * 8;
-  const ridgeHeight = -0.6 + rand() * 2.8;
-
-  const tempArena: ArenaConfig = {
+  const tempArena: BattlefieldConfig = {
     seed,
+    stageNumber,
+    biome: biomeEntry.biome,
+    biomeTitle: biomeEntry.title,
     distance,
     leftHillHeight,
-    rightHillHeight: adjustedRightHeight,
-    valleyDepth,
-    ridgeCenterOffset,
-    ridgeHeight,
+    rightHillHeight,
+    centerRidgeHeight,
+    centerRidgeX,
+    roughnessFreq,
+    roughnessAmp,
     obstacles: [],
+    crates: [],
   };
 
-  const obstacleSpecs: Array<{
-    kind: ObstacleKind;
-    xRatio: number;
-    width: number;
-    height: number;
-    hp: number;
-  }> = [
-    {
-      kind: 'barrel',
-      xRatio: -0.22 + (rand() - 0.5) * 0.06,
-      width: 1.15,
-      height: 1.55,
-      hp: 35,
-    },
-    {
-      kind: 'wall',
-      xRatio: 0.0 + (rand() - 0.5) * 0.08,
-      width: 1.5,
-      height: 3.1,
-      hp: 90,
-    },
-    {
-      kind: 'stone',
-      xRatio: 0.22 + (rand() - 0.5) * 0.06,
-      width: 1.35,
-      height: 2.1,
-      hp: 65,
-    },
-  ];
+  // Spawn 3 to 4 destructible battlefield obstacles in the middle zone
+  const obstacleKinds: DestructibleObstacle['kind'][] = ['bunker', 'fuel_tank', 'rock', 'wall'];
+  const count = 3 + (rng() > 0.45 ? 1 : 0);
+  const span = distance * 0.46;
+  const obstacles: DestructibleObstacle[] = [];
 
-  // Optionally add a 4th barrel near one of the fortifications
-  if (rand() > 0.35) {
-    obstacleSpecs.push({
-      kind: 'barrel',
-      xRatio: (rand() > 0.5 ? 0.11 : -0.11),
-      width: 1.1,
-      height: 1.45,
-      hp: 35,
+  for (let i = 0; i < count; i++) {
+    const t = count === 1 ? 0 : i / (count - 1) - 0.5;
+    const ox = Number((t * span + (rng() - 0.5) * 4.5).toFixed(2));
+    const oz = Number(((rng() - 0.5) * 3.2).toFixed(2));
+    const kind = obstacleKinds[Math.floor(rng() * obstacleKinds.length)];
+    const oy = terrainHeightAt(ox, tempArena);
+
+    let width = 2.4;
+    let height = 2.4;
+    let depth = 2.4;
+    let maxHp = 75;
+
+    if (kind === 'fuel_tank') {
+      width = 1.8;
+      height = 2.2;
+      depth = 1.8;
+      maxHp = 45;
+    } else if (kind === 'bunker') {
+      width = 3.2;
+      height = 2.8;
+      depth = 3.0;
+      maxHp = 110;
+    } else if (kind === 'wall') {
+      width = 2.2;
+      height = 3.4;
+      depth = 3.6;
+      maxHp = 130;
+    } else {
+      width = 2.8;
+      height = 2.6;
+      depth = 2.6;
+      maxHp = 95;
+    }
+
+    obstacles.push({
+      id: `obs-${i}-${Math.floor(rng() * 10000)}`,
+      kind,
+      x: ox,
+      y: oy,
+      z: oz,
+      width,
+      height,
+      depth,
+      hp: maxHp,
+      maxHp,
+      destroyed: false,
     });
   }
 
-  tempArena.obstacles = obstacleSpecs.map((spec, idx) => {
-    const x = spec.xRatio * distance;
-    const y = terrainHeightAt(x, tempArena);
-    return {
-      id: `obs-${idx}-${spec.kind}`,
-      kind: spec.kind,
-      x,
-      y,
-      width: spec.width,
-      height: spec.height,
-      hp: spec.hp,
-      maxHp: spec.hp,
-      destroyed: false,
-    };
-  });
+  // Spawn 2 Supply Crates (1 First-Aid Heal Crate near player's driving range + 1 Gold Coin Crate in midfield)
+  const halfDist = distance * 0.5;
+  const healCrateX = Number((-halfDist + 4.2 + rng() * 3.2).toFixed(2));
+  const coinCrateX = Number(((rng() - 0.5) * (distance * 0.35)).toFixed(2));
 
+  const crates: SupplyCrate[] = [
+    {
+      id: `crate-heal-${stageNumber}`,
+      kind: 'heal',
+      x: healCrateX,
+      y: terrainHeightAt(healCrateX, tempArena),
+      z: Number(((rng() - 0.5) * 2.4).toFixed(2)),
+      collected: false,
+      value: 25, // +25% HP
+    },
+    {
+      id: `crate-coin-${stageNumber}`,
+      kind: 'coins',
+      x: coinCrateX,
+      y: terrainHeightAt(coinCrateX, tempArena),
+      z: Number(((rng() - 0.5) * 2.4).toFixed(2)),
+      collected: false,
+      value: 55 + stageNumber * 10, // Bonus coins
+    },
+  ];
+
+  tempArena.obstacles = obstacles;
+  tempArena.crates = crates;
   return tempArena;
 }
 
 /**
- * Get the world coordinates where an archer's arrow spawns
+ * Evaluates terrain elevation y at horizontal coordinate x.
  */
-export function getBowLaunchOrigin(archer: ArcherState): { x: number; y: number } {
-  return {
-    x: archer.x + archer.facing * ARCHER_BOW_OFFSET_X,
-    y: archer.y + ARCHER_BOW_OFFSET_Y,
-  };
+export function terrainHeightAt(x: number, arena: BattlefieldConfig): number {
+  const halfDist = arena.distance * 0.5;
+
+  const leftDist = x - -halfDist;
+  const leftHill = arena.leftHillHeight * Math.exp(-(leftDist * leftDist) / 75);
+
+  const rightDist = x - halfDist;
+  const rightHill = arena.rightHillHeight * Math.exp(-(rightDist * rightDist) / 75);
+
+  const centerDist = x - arena.centerRidgeX;
+  const centerRidge = arena.centerRidgeHeight * Math.exp(-(centerDist * centerDist) / 95);
+
+  // Smooth out micro-roughness directly under the tank spawn zones
+  const platformMask =
+    1 -
+    0.75 * Math.exp(-(leftDist * leftDist) / 22) -
+    0.75 * Math.exp(-(rightDist * rightDist) / 22);
+  const microRoughness =
+    Math.sin(x * arena.roughnessFreq) *
+    Math.cos(x * arena.roughnessFreq * 0.63) *
+    arena.roughnessAmp *
+    Math.max(0, platformMask);
+
+  return leftHill + rightHill + centerRidge + microRoughness;
 }
 
 /**
- * Advance arrow state by time step dt under gravity and horizontal wind
+ * Computes terrain slope angle (in radians) at x so the tank hull tilts naturally on uneven slopes.
  */
-export function stepArrowPhysics(
-  state: { x: number; y: number; vx: number; vy: number },
-  windSpeed: number,
-  dt: number
-): ArrowStepResult {
-  const ax = windSpeed * WIND_ACCEL_FACTOR;
-  const ay = -GRAVITY;
+export function terrainSlopeAt(x: number, arena: BattlefieldConfig): number {
+  const delta = 0.6;
+  const y1 = terrainHeightAt(x - delta, arena);
+  const y2 = terrainHeightAt(x + delta, arena);
+  return Math.atan2(y2 - y1, delta * 2);
+}
 
-  const nextVx = state.vx + ax * dt;
-  const nextVy = state.vy + ay * dt;
-  const nextX = state.x + state.vx * dt + 0.5 * ax * dt * dt;
-  const nextY = state.y + state.vy * dt + 0.5 * ay * dt * dt;
-  const angleRad = Math.atan2(nextVy, nextVx);
+/**
+ * Generates dynamic wind speed in [-10, +10] m/s for the current turn.
+ */
+export function generateTurnWind(biome: BiomeType, seed: number = Date.now()): number {
+  const rng = seededRandom(seed);
+  const maxWind = biome === 'snow' || biome === 'desert' ? 9.5 : biome === 'industrial' ? 8.0 : 6.5;
+  const raw = (rng() * 2 - 1) * maxWind;
+  return Number(raw.toFixed(1));
+}
+
+export function powerToMuzzleVelocity(powerPct: number, shellMultiplier = 1.0): number {
+  const clamped = Math.max(15, Math.min(100, powerPct));
+  const normalized = (clamped - 15) / 85;
+  return (MIN_MUZZLE_SPEED + normalized * (MAX_MUZZLE_SPEED - MIN_MUZZLE_SPEED)) * shellMultiplier;
+}
+
+/**
+ * Returns the world 3D coordinates of the tank's cannon muzzle tip.
+ */
+export function getTankMuzzleOrigin(tank: TankCombatState): { x: number; y: number; z: number } {
+  const angleRad = (tank.barrelAngleDeg * Math.PI) / 180;
+  const dir = tank.facing;
+  const scale = tank.model.scale;
+  const turretPivotY = tank.y + 1.45 * scale;
+  const barrelLen = 3.1 * scale;
+
+  const mx = tank.x + dir * Math.cos(angleRad) * barrelLen * Math.cos(tank.turretYawRad);
+  const my = turretPivotY + Math.sin(angleRad) * barrelLen;
+  const mz = tank.z + Math.cos(angleRad) * barrelLen * Math.sin(tank.turretYawRad);
+  return { x: mx, y: my, z: mz };
+}
+
+/**
+ * Steps projectile physics under gravity (g) and dynamic horizontal wind.
+ */
+export function stepProjectile(
+  state: TrajectoryPoint,
+  dt: number,
+  windSpeed: number
+): TrajectoryPoint {
+  const windAccel = windSpeed * 0.52;
+  const nextVx = state.vx + windAccel * dt;
+  const nextVy = state.vy - GRAVITY * dt;
+  const nextVz = state.vz * (1 - 0.05 * dt);
 
   return {
-    x: nextX,
-    y: nextY,
+    x: state.x + state.vx * dt + 0.5 * windAccel * dt * dt,
+    y: state.y + state.vy * dt - 0.5 * GRAVITY * dt * dt,
+    z: state.z + state.vz * dt,
     vx: nextVx,
     vy: nextVy,
-    angleRad,
+    vz: nextVz,
+    t: state.t + dt,
   };
 }
 
 /**
- * Compute short dashed trajectory preview (strictly limited to 3.5 - 4.5 meters
- * so it reveals initial launch angle & wind push without spoiling landing point)
+ * Computes the short dashed trajectory preview right next to the tank barrel (strictly capped at 3-5m).
  */
-export function computeTrajectoryPreview(
-  origin: { x: number; y: number },
-  angleDeg: number,
-  powerPct: number,
-  facing: 1 | -1,
+export function computeShortTrajectoryPreview(
+  tank: TankCombatState,
   windSpeed: number,
-  maxPreviewMeters = 4.2
-): Array<{ x: number; y: number }> {
-  const speed = powerToSpeed(powerPct);
-  const rad = (angleDeg * Math.PI) / 180;
-  let state = {
+  maxLengthMeters: number = TRAJECTORY_PREVIEW_MAX_METERS
+): Array<{ x: number; y: number; z: number }> {
+  const cappedMax = Math.max(3.0, Math.min(5.0, maxLengthMeters));
+  const origin = getTankMuzzleOrigin(tank);
+  const speed = powerToMuzzleVelocity(tank.powerPct, tank.shell.muzzleVelocityMultiplier);
+  const angleRad = (tank.barrelAngleDeg * Math.PI) / 180;
+  const dir = tank.facing;
+
+  let current: TrajectoryPoint = {
     x: origin.x,
     y: origin.y,
-    vx: Math.cos(rad) * speed * facing,
-    vy: Math.sin(rad) * speed,
+    z: origin.z,
+    vx: dir * speed * Math.cos(angleRad) * Math.cos(tank.turretYawRad),
+    vy: speed * Math.sin(angleRad),
+    vz: speed * Math.cos(angleRad) * Math.sin(tank.turretYawRad),
+    t: 0,
   };
 
-  const points: Array<{ x: number; y: number }> = [{ x: state.x, y: state.y }];
-  let traveled = 0;
-  const dt = 0.018;
+  const points: Array<{ x: number; y: number; z: number }> = [{ x: current.x, y: current.y, z: current.z }];
+  let accumulatedLength = 0;
+  const dt = 0.02;
 
-  for (let i = 0; i < 40; i++) {
-    const next = stepArrowPhysics(state, windSpeed, dt);
-    const segLen = Math.hypot(next.x - state.x, next.y - state.y);
-    if (traveled + segLen >= maxPreviewMeters) {
-      const remain = maxPreviewMeters - traveled;
-      const ratio = segLen > 0.0001 ? remain / segLen : 0;
+  for (let i = 0; i < 65; i++) {
+    const next = stepProjectile(current, dt, windSpeed);
+    const segLen = Math.hypot(next.x - current.x, next.y - current.y, next.z - current.z);
+
+    if (accumulatedLength + segLen >= cappedMax) {
+      const remain = cappedMax - accumulatedLength;
+      const ratio = segLen > 0 ? remain / segLen : 0;
       points.push({
-        x: state.x + (next.x - state.x) * ratio,
-        y: state.y + (next.y - state.y) * ratio,
+        x: current.x + (next.x - current.x) * ratio,
+        y: current.y + (next.y - current.y) * ratio,
+        z: current.z + (next.z - current.z) * ratio,
       });
       break;
     }
-    traveled += segLen;
-    points.push({ x: next.x, y: next.y });
-    state = next;
+
+    points.push({ x: next.x, y: next.y, z: next.z });
+    accumulatedLength += segLen;
+    current = next;
   }
 
   return points;
 }
 
 /**
- * Calculate damage for a hit zone:
- * - Headshot: Critical 75 - 100% max HP (default 85 damage)
- * - Body (chest/torso): Medium 30 - 40% max HP (default 35 damage)
- * - Limbs (arms/legs): Low 15 - 20% max HP (default 18 damage)
+ * Checks 3D localized tank hitboxes:
+ * - Turret / Weakspot ('turret'): Critical Damage (38% to 52% base HP, scaled by shell & tank power)
+ * - Main Hull ('hull'): Medium Damage (24% to 34% base HP)
+ * - Tracks / Wheels ('tracks'): Lower Damage (14% to 20% base HP + slows movement next turn)
  */
-export function calculateHitDamage(zone: HitZone, velocityMagnitude = 22): {
-  damage: number;
-  isCritical: boolean;
-} {
-  const speedBonus = Math.max(0, Math.min(1, (velocityMagnitude - 12) / 22));
-  if (zone === 'head') {
-    const damage = Math.round(78 + speedBonus * 22); // 78 to 100 HP
-    return { damage, isCritical: true };
-  }
-  if (zone === 'body') {
-    const damage = Math.round(32 + speedBonus * 8); // 32 to 40 HP
-    return { damage, isCritical: false };
-  }
-  const damage = Math.round(15 + speedBonus * 5); // 15 to 20 HP
-  return { damage, isCritical: false };
-}
-
-/**
- * Check if a point (x, y) collides with an archer and classify HitZone (Head / Body / Limbs)
- */
-export function checkArcherCollision(
+export function checkTankHitbox(
   px: number,
   py: number,
-  archer: ArcherState,
-  velocityMagnitude = 22
-): HitDetectionResult | null {
-  if (archer.hp <= 0) return null;
+  pz: number,
+  tank: TankCombatState,
+  attacker: TankCombatState
+): { hitZone: HitZone; damage: number } | null {
+  if (py < tank.y - 0.3 || py > tank.y + 3.2 * tank.model.scale) return null;
 
-  const dx = Math.abs(px - archer.x);
-  const relY = py - archer.y;
+  const s = tank.model.scale;
+  const dx = Math.abs(px - tank.x);
+  const dz = Math.abs(pz - tank.z);
 
-  if (relY < 0 || relY > ARCHER_HEAD_TOP + 0.12) {
-    return null;
+  // Check Z depth tolerance (tank width + shell blast proximity)
+  const zLimit = 1.85 * s + (attacker.shell.blastRadius - 2.2) * 0.35;
+  if (dz > zLimit) return null;
+
+  const relY = (py - tank.y) / s;
+  const combatRatio =
+    (attacker.model.damageMultiplier * attacker.shell.damageMultiplier) /
+    Math.max(0.8, tank.model.armorMultiplier);
+
+  // 1. Turret / Cupola Weakspot: relY in [1.28, 2.35], horizontal radius <= 1.45 * s
+  if (relY >= 1.28 && relY <= 2.35 && dx <= 1.45 * s) {
+    const centerFactor = 1 - Math.min(1, dx / (1.45 * s));
+    const rawDamage = (38 + centerFactor * 14) * combatRatio;
+    return { hitZone: 'turret', damage: Math.round(Math.max(25, Math.min(95, rawDamage))) };
   }
 
-  // 1. Head hitbox: y in [1.82, 2.38], radius 0.34m
-  if (relY >= ARCHER_BODY_TOP && relY <= ARCHER_HEAD_TOP + 0.08) {
-    const headCenterY = 2.08;
-    const distHead = Math.hypot(px - archer.x, relY - headCenterY);
-    if (distHead <= 0.36) {
-      const { damage, isCritical } = calculateHitDamage('head', velocityMagnitude);
-      return {
-        hitType: 'archer',
-        hitZone: 'head',
-        damage,
-        isCritical,
-        targetArcherId: archer.id,
-        impactPoint: { x: px, y: py },
-      };
-    }
+  // 2. Main Armored Hull: relY in [0.62, 1.28), horizontal half-length <= 2.35 * s
+  if (relY >= 0.62 && relY < 1.28 && dx <= 2.35 * s) {
+    const centerFactor = 1 - Math.min(1, dx / (2.35 * s));
+    const rawDamage = (24 + centerFactor * 10) * combatRatio;
+    return { hitZone: 'hull', damage: Math.round(Math.max(16, Math.min(65, rawDamage))) };
   }
 
-  // 2. Upper body / chest vs outer arms: y in [1.05, 1.82]
-  if (relY >= ARCHER_LIMB_TOP && relY < ARCHER_BODY_TOP) {
-    // Inner torso core: dx <= 0.36m -> Body hit
-    if (dx <= 0.36) {
-      const { damage, isCritical } = calculateHitDamage('body', velocityMagnitude);
-      return {
-        hitType: 'archer',
-        hitZone: 'body',
-        damage,
-        isCritical,
-        targetArcherId: archer.id,
-        impactPoint: { x: px, y: py },
-      };
-    }
-    // Outer shoulder/arms/bow-arm zone: 0.36 < dx <= 0.62m -> Limbs hit
-    if (dx <= 0.62) {
-      const { damage, isCritical } = calculateHitDamage('limbs', velocityMagnitude);
-      return {
-        hitType: 'archer',
-        hitZone: 'limbs',
-        damage,
-        isCritical,
-        targetArcherId: archer.id,
-        impactPoint: { x: px, y: py },
-      };
-    }
-  }
-
-  // 3. Lower limbs (legs): y in [0, 1.05], dx <= 0.44m -> Limbs hit
-  if (relY >= 0 && relY < ARCHER_LIMB_TOP && dx <= 0.44) {
-    const { damage, isCritical } = calculateHitDamage('limbs', velocityMagnitude);
-    return {
-      hitType: 'archer',
-      hitZone: 'limbs',
-      damage,
-      isCritical,
-      targetArcherId: archer.id,
-      impactPoint: { x: px, y: py },
-    };
+  // 3. Tracks & Roadwheels: relY in [0.0, 0.62), horizontal half-length <= 2.55 * s
+  if (relY >= 0.0 && relY < 0.62 && dx <= 2.55 * s) {
+    const centerFactor = 1 - Math.min(1, dx / (2.55 * s));
+    const rawDamage = (14 + centerFactor * 6) * combatRatio;
+    return { hitZone: 'tracks', damage: Math.round(Math.max(10, Math.min(40, rawDamage))) };
   }
 
   return null;
 }
 
 /**
- * Sub-stepped segment collision check from (prevX, prevY) to (nextX, nextY)
+ * Checks whether a point (px, py, pz) hits any supply crate, destructible obstacle, tank, or ground.
  */
-export function evaluateSegmentCollision(
-  prevX: number,
-  prevY: number,
-  nextX: number,
-  nextY: number,
-  vx: number,
-  vy: number,
+export function evaluatePointCollision(
+  px: number,
+  py: number,
+  pz: number,
   shooterId: 1 | 2,
-  archers: [ArcherState, ArcherState],
-  arena: ArenaConfig
+  tanks: [TankCombatState, TankCombatState],
+  arena: BattlefieldConfig,
+  elapsedTime: number
 ): HitDetectionResult {
-  const steps = 6;
-  const speed = Math.hypot(vx, vy);
+  const shooter = tanks[shooterId - 1];
 
-  for (let s = 1; s <= steps; s++) {
-    const t = s / steps;
-    const x = prevX + (nextX - prevX) * t;
-    const y = prevY + (nextY - prevY) * t;
-
-    // Check target archer first (and self only if arrow somehow blew backward after >0.5m)
-    for (const archer of archers) {
-      if (archer.id === shooterId && Math.abs(x - archer.x) < 0.9) continue;
-      const archerHit = checkArcherCollision(x, y, archer, speed);
-      if (archerHit) return archerHit;
+  // 1. Check Supply Crates
+  for (const crate of arena.crates) {
+    if (crate.collected) continue;
+    if (
+      Math.abs(px - crate.x) <= 1.35 &&
+      py >= crate.y - 0.2 &&
+      py <= crate.y + 1.8 &&
+      Math.abs(pz - crate.z) <= 1.6
+    ) {
+      return {
+        hitType: 'crate',
+        crateId: crate.id,
+        impactPoint: { x: px, y: py, z: pz },
+      };
     }
+  }
 
-    // Check destructible obstacles
-    for (const obs of arena.obstacles) {
-      if (obs.destroyed) continue;
-      const halfW = obs.width * 0.5;
-      if (x >= obs.x - halfW && x <= obs.x + halfW && y >= obs.y && y <= obs.y + obs.height) {
+  // 2. Check Tanks (skip shooter during initial 0.16s muzzle clearance)
+  for (const tank of tanks) {
+    if (tank.hp <= 0) continue;
+    if (tank.id === shooterId && elapsedTime < 0.16) continue;
+    const hit = checkTankHitbox(px, py, pz, tank, shooter);
+    if (hit) {
+      return {
+        hitType: 'tank',
+        targetTankId: tank.id,
+        hitZone: hit.hitZone,
+        damage: hit.damage,
+        impactPoint: { x: px, y: py, z: pz },
+      };
+    }
+  }
+
+  // 3. Check Destructible Battlefield Obstacles
+  for (const obs of arena.obstacles) {
+    if (obs.destroyed) continue;
+    const halfW = obs.width * 0.5;
+    const halfD = obs.depth * 0.5;
+    if (
+      px >= obs.x - halfW &&
+      px <= obs.x + halfW &&
+      py >= obs.y &&
+      py <= obs.y + obs.height &&
+      Math.abs(pz - obs.z) <= halfD + 0.6
+    ) {
+      return {
+        hitType: 'obstacle',
+        obstacleId: obs.id,
+        damage: Math.round(45 * shooter.shell.damageMultiplier * shooter.model.damageMultiplier),
+        impactPoint: { x: px, y: py, z: pz },
+      };
+    }
+  }
+
+  // 4. Check Ground Terrain + Splash Damage near Opponent Tank
+  const groundY = terrainHeightAt(px, arena);
+  if (py <= groundY) {
+    // Check if shell blast radius splashes a nearby tank's tracks
+    for (const tank of tanks) {
+      if (tank.hp <= 0) continue;
+      if (tank.id === shooterId && elapsedTime < 0.25) continue;
+      const distToTank = Math.hypot(px - tank.x, pz - tank.z);
+      if (distToTank <= shooter.shell.blastRadius + 1.1) {
+        const splashFactor = Math.max(0.35, 1 - distToTank / (shooter.shell.blastRadius + 1.4));
+        const splashDmg = Math.round(16 * splashFactor * shooter.shell.damageMultiplier);
         return {
-          hitType: 'obstacle',
-          obstacleId: obs.id,
-          damage: Math.round(28 + (speed / MAX_VELOCITY) * 22),
-          impactPoint: { x, y },
+          hitType: 'tank',
+          targetTankId: tank.id,
+          hitZone: 'tracks',
+          damage: Math.max(8, splashDmg),
+          impactPoint: { x: px, y: groundY, z: pz },
         };
       }
     }
 
-    // Check terrain ground height
-    const groundY = terrainHeightAt(x, arena);
-    if (y <= groundY) {
-      return {
-        hitType: 'terrain',
-        impactPoint: { x, y: groundY },
-      };
-    }
+    return {
+      hitType: 'ground',
+      impactPoint: { x: px, y: groundY, z: pz },
+    };
   }
 
   return {
     hitType: 'none',
-    impactPoint: { x: nextX, y: nextY },
+    impactPoint: { x: px, y: py, z: pz },
   };
 }
 
 /**
- * Simulate a complete shot to find where it lands or what it hits (used by AI and tests)
+ * Simulates an entire shell flight for AI trajectory planning.
  */
 export function simulateFullShot(
-  shooter: ArcherState,
-  target: ArcherState,
-  angleDeg: number,
+  shooter: TankCombatState,
+  barrelAngleDeg: number,
   powerPct: number,
   windSpeed: number,
-  arena: ArenaConfig
-): {
-  hitResult: HitDetectionResult;
-  closestDistToTargetHead: number;
-  closestDistToTargetBody: number;
-  landingX: number;
-} {
-  const origin = getBowLaunchOrigin(shooter);
-  const speed = powerToSpeed(powerPct);
-  const rad = (angleDeg * Math.PI) / 180;
+  tanks: [TankCombatState, TankCombatState],
+  arena: BattlefieldConfig
+): { path: TrajectoryPoint[]; result: HitDetectionResult } {
+  const testShooter: TankCombatState = { ...shooter, barrelAngleDeg, powerPct };
+  const origin = getTankMuzzleOrigin(testShooter);
+  const speed = powerToMuzzleVelocity(powerPct, testShooter.shell.muzzleVelocityMultiplier);
+  const angleRad = (barrelAngleDeg * Math.PI) / 180;
+  const dir = testShooter.facing;
 
-  let state = {
+  let current: TrajectoryPoint = {
     x: origin.x,
     y: origin.y,
-    vx: Math.cos(rad) * speed * shooter.facing,
-    vy: Math.sin(rad) * speed,
+    z: origin.z,
+    vx: dir * speed * Math.cos(angleRad) * Math.cos(testShooter.turretYawRad),
+    vy: speed * Math.sin(angleRad),
+    vz: speed * Math.cos(angleRad) * Math.sin(testShooter.turretYawRad),
+    t: 0,
   };
 
-  const dt = 0.025;
-  let closestHead = Infinity;
-  let closestBody = Infinity;
-  const targetHeadY = target.y + 2.08;
-  const targetBodyY = target.y + 1.45;
+  const path: TrajectoryPoint[] = [current];
+  const dt = 0.02;
+  const subSteps = 3;
+  const maxSteps = 550;
 
-  for (let step = 0; step < 600; step++) {
-    const next = stepArrowPhysics(state, windSpeed, dt);
+  for (let step = 0; step < maxSteps; step++) {
+    const next = stepProjectile(current, dt, windSpeed);
 
-    const dHead = Math.hypot(next.x - target.x, next.y - targetHeadY);
-    const dBody = Math.hypot(next.x - target.x, next.y - targetBodyY);
-    if (dHead < closestHead) closestHead = dHead;
-    if (dBody < closestBody) closestBody = dBody;
+    for (let s = 1; s <= subSteps; s++) {
+      const alpha = s / subSteps;
+      const ix = current.x + (next.x - current.x) * alpha;
+      const iy = current.y + (next.y - current.y) * alpha;
+      const iz = current.z + (next.z - current.z) * alpha;
+      const it = current.t + dt * alpha;
 
-    const collision = evaluateSegmentCollision(
-      state.x,
-      state.y,
-      next.x,
-      next.y,
-      next.vx,
-      next.vy,
-      shooter.id,
-      [shooter, target],
-      arena
-    );
-
-    if (collision.hitType !== 'none') {
-      return {
-        hitResult: collision,
-        closestDistToTargetHead: closestHead,
-        closestDistToTargetBody: closestBody,
-        landingX: collision.impactPoint.x,
-      };
+      const hit = evaluatePointCollision(ix, iy, iz, shooter.id, tanks, arena, it);
+      if (hit.hitType !== 'none') {
+        path.push({ ...next, x: hit.impactPoint.x, y: hit.impactPoint.y, z: hit.impactPoint.z, t: it });
+        return { path, result: hit };
+      }
     }
 
-    if (Math.abs(next.x) > arena.distance * 1.35 || next.y < -25) {
+    path.push(next);
+    current = next;
+
+    if (Math.abs(current.x) > arena.distance * 1.4 || current.y < -30) {
       return {
-        hitResult: { hitType: 'terrain', impactPoint: { x: next.x, y: next.y } },
-        closestDistToTargetHead: closestHead,
-        closestDistToTargetBody: closestBody,
-        landingX: next.x,
+        path,
+        result: {
+          hitType: 'ground',
+          impactPoint: { x: current.x, y: terrainHeightAt(current.x, arena), z: current.z },
+        },
       };
     }
-
-    state = next;
   }
 
   return {
-    hitResult: { hitType: 'terrain', impactPoint: { x: state.x, y: state.y } },
-    closestDistToTargetHead: closestHead,
-    closestDistToTargetBody: closestBody,
-    landingX: state.x,
+    path,
+    result: {
+      hitType: 'ground',
+      impactPoint: { x: current.x, y: terrainHeightAt(current.x, arena), z: current.z },
+    },
   };
 }
 
 /**
- * AI Decision Engine for Easy, Medium, and Hard difficulties:
- * - Easy: High random error (±15° angle, ±25% power), ignores wind completely, misses first 3 shots.
- * - Medium: Moderate error (±6° angle, ±10% power), adapts from previous shot's miss offset.
- * - Hard: Full ballistic + wind simulation across both standard & high-arch trajectories;
- *   shot 1 lands threateningly close or grazes, shot 2+ locks onto headshot/body.
+ * Selects the enemy tank model and AI accuracy scaling based on the current stage number
+ * and the player's chosen tank so the enemy is comparable at Stage 1 and progressively stronger each stage.
  */
-export function computeAIShot(
-  aiArcher: ArcherState,
-  playerArcher: ArcherState,
+export function selectEnemyTankForStage(playerTankIndex: number, stageNumber: number): TankModelSpec {
+  const targetIndex = Math.min(
+    TANK_CATALOG.length - 1,
+    Math.max(playerTankIndex, Math.floor((stageNumber - 1) * 0.85) + Math.min(2, playerTankIndex))
+  );
+  return TANK_CATALOG[targetIndex];
+}
+
+/**
+ * Computes AI tank movement (repositioning to dodge) and ballistic cannon shot for the current stage.
+ */
+export function computeAITankTurn(
+  aiTank: TankCombatState,
+  playerTank: TankCombatState,
   windSpeed: number,
-  arena: ArenaConfig,
-  difficulty: AIDifficulty,
-  seed = Date.now()
-): { angleDeg: number; powerPct: number; reasoningTag: string } {
-  const rand = mulberry32(seed + aiArcher.shotsFired * 97);
+  arena: BattlefieldConfig,
+  stageNumber: number,
+  seed: number = Date.now()
+): {
+  moveDeltaX: number;
+  moveDeltaZ: number;
+  barrelAngleDeg: number;
+  powerPct: number;
+  turretYawRad: number;
+} {
+  const rng = seededRandom(seed);
 
-  // 1. Find ideal ballistic solution (ignoring wind for Easy, including wind for Medium/Hard)
-  const effectiveWind = difficulty === 'easy' ? 0 : windSpeed;
+  // 1. Tactical movement: AI moves slightly forward/backward and sideways each turn
+  const maxStep = Math.min(aiTank.moveFuel, 2.8);
+  const moveDeltaX = Number(((rng() - 0.5) * 2 * maxStep * 0.75).toFixed(2));
+  const moveDeltaZ = Number(((rng() - 0.5) * 2 * Math.min(1.6, maxStep * 0.45)).toFixed(2));
 
-  let bestAngle = 42;
-  let bestPower = 68;
+  const movedAi: TankCombatState = {
+    ...aiTank,
+    x: aiTank.x + moveDeltaX,
+    z: Math.max(-4.5, Math.min(4.5, aiTank.z + moveDeltaZ)),
+  };
+  movedAi.y = terrainHeightAt(movedAi.x, arena);
+
+  const turretYawRad = Math.atan2(playerTank.z - movedAi.z, Math.abs(playerTank.x - movedAi.x));
+  movedAi.turretYawRad = turretYawRad;
+
+  const targetX = playerTank.x;
+  const targetY = playerTank.y + 1.25 * playerTank.model.scale;
+
+  let bestAngle = 38;
+  let bestPower = 72;
   let bestScore = Infinity;
 
-  // Search angle [18..76] (including Arch Shots over walls!) and power [30..98]
-  const angleCandidates =
-    difficulty === 'hard'
-      ? [22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62, 66, 70, 74]
-      : [25, 32, 38, 45, 52, 60, 68];
-  const powerStep = difficulty === 'hard' ? 1.5 : 3.0;
-
-  for (const ang of angleCandidates) {
-    for (let pwr = 32; pwr <= 98; pwr += powerStep) {
-      const sim = simulateFullShot(aiArcher, playerArcher, ang, pwr, effectiveWind, arena);
-
-      // Direct hit on target archer is top priority
-      if (sim.hitResult.hitType === 'archer' && sim.hitResult.targetArcherId === playerArcher.id) {
+  const candidateAngles = [22, 26, 30, 34, 38, 42, 46, 50, 55, 60, 65];
+  for (const ang of candidateAngles) {
+    for (let pwr = 32; pwr <= 98; pwr += 3) {
+      const sim = simulateFullShot(movedAi, ang, pwr, windSpeed, [playerTank, movedAi], arena);
+      if (sim.result.hitType === 'tank' && sim.result.targetTankId === playerTank.id) {
         const zoneBonus =
-          sim.hitResult.hitZone === 'head'
-            ? -50
-            : sim.hitResult.hitZone === 'body'
-              ? -25
-              : -10;
-        const score = zoneBonus + sim.closestDistToTargetHead;
-        if (score < bestScore) {
-          bestScore = score;
+          sim.result.hitZone === 'turret' ? -25 : sim.result.hitZone === 'hull' ? -12 : -5;
+        if (zoneBonus < bestScore) {
+          bestScore = zoneBonus;
           bestAngle = ang;
           bestPower = pwr;
         }
       } else {
-        // Otherwise score by closest approach to target body (penalizing early obstacle hits)
-        const obsPenalty = sim.hitResult.hitType === 'obstacle' ? 12 : 0;
-        const score = sim.closestDistToTargetBody + obsPenalty;
-        if (score < bestScore) {
-          bestScore = score;
+        const distErr = Math.hypot(
+          sim.result.impactPoint.x - targetX,
+          sim.result.impactPoint.y - targetY
+        );
+        const obsPenalty = sim.result.hitType === 'obstacle' ? 18 : 0;
+        const totalErr = distErr + obsPenalty;
+        if (totalErr < bestScore) {
+          bestScore = totalErr;
           bestAngle = ang;
           bestPower = pwr;
         }
@@ -608,78 +931,16 @@ export function computeAIShot(
     }
   }
 
-  // Refine around bestAngle / bestPower for Hard mode
-  if (difficulty === 'hard') {
-    for (let dA = -2.5; dA <= 2.5; dA += 0.5) {
-      for (let dP = -2.0; dP <= 2.0; dP += 0.4) {
-        const ang = Math.max(12, Math.min(82, bestAngle + dA));
-        const pwr = Math.max(20, Math.min(100, bestPower + dP));
-        const sim = simulateFullShot(aiArcher, playerArcher, ang, pwr, windSpeed, arena);
-        if (sim.hitResult.hitType === 'archer' && sim.hitResult.targetArcherId === playerArcher.id) {
-          const zoneBonus = sim.hitResult.hitZone === 'head' ? -80 : -40;
-          const score = zoneBonus + sim.closestDistToTargetHead;
-          if (score < bestScore) {
-            bestScore = score;
-            bestAngle = ang;
-            bestPower = pwr;
-          }
-        }
-      }
-    }
-  }
-
-  // Apply difficulty-specific error profiles
-  if (difficulty === 'easy') {
-    // Easy: ±15° angle error, ±25% power error, ignores wind, misses first 3 shots
-    let angleError = (rand() * 2 - 1) * 15;
-    let powerError = (rand() * 2 - 1) * 25;
-    if (aiArcher.shotsFired < 3 && Math.abs(angleError) < 6 && Math.abs(powerError) < 9) {
-      // Ensure early shots in Easy mode have noticeable error so player has breathing room
-      angleError = angleError >= 0 ? 9 + rand() * 6 : -9 - rand() * 6;
-      powerError = powerError >= 0 ? 12 + rand() * 10 : -12 - rand() * 10;
-    }
-    return {
-      angleDeg: Math.round(Math.max(10, Math.min(82, bestAngle + angleError))),
-      powerPct: Math.round(Math.max(20, Math.min(100, bestPower + powerError))),
-      reasoningTag: 'خطای تصادفی بالا · بدون محاسبه باد',
-    };
-  }
-
-  if (difficulty === 'medium') {
-    // Medium: ±6° and ±10% initial error, decays by 38% per shot as AI corrects from previous miss
-    const decay = Math.pow(0.62, aiArcher.shotsFired);
-    const angleError = (rand() * 2 - 1) * 6 * decay;
-    const powerError = (rand() * 2 - 1) * 10 * decay;
-    return {
-      angleDeg: Math.round(Math.max(10, Math.min(82, bestAngle + angleError)) * 10) / 10,
-      powerPct: Math.round(Math.max(20, Math.min(100, bestPower + powerError)) * 10) / 10,
-      reasoningTag:
-        aiArcher.shotsFired === 0
-          ? 'تخمین اولیه فاصله و باد'
-          : `تصحیح خطای نوبت قبل (نوبت ${aiArcher.shotsFired + 1})`,
-    };
-  }
-
-  // Hard: Shot 0 is a near-hit / graze (±1.4° / ±2.2%), Shot 1+ is surgical headshot/body lock
-  const isFirstShot = aiArcher.shotsFired === 0;
-  const hardAngleJitter = isFirstShot ? (rand() > 0.5 ? 1.3 : -1.3) : (rand() * 2 - 1) * 0.35;
-  const hardPowerJitter = isFirstShot ? (rand() > 0.5 ? 2.0 : -2.0) : (rand() * 2 - 1) * 0.5;
+  // Stage-scaled error: Stage 1 has gentle jitter; higher stages become deadlier
+  const accuracyFactor = Math.max(0.18, 1 - (stageNumber - 1) * 0.12);
+  const angleJitter = (rng() * 2 - 1) * 5.5 * accuracyFactor;
+  const powerJitter = (rng() * 2 - 1) * 7.5 * accuracyFactor;
 
   return {
-    angleDeg: Math.round(Math.max(10, Math.min(82, bestAngle + hardAngleJitter)) * 10) / 10,
-    powerPct: Math.round(Math.max(20, Math.min(100, bestPower + hardPowerJitter)) * 10) / 10,
-    reasoningTag: isFirstShot
-      ? 'محاسبه دقیق بالستیک و کالیبراسیون باد'
-      : 'قفل هدف روی نقطه بحرانی (Headshot Solver)',
+    moveDeltaX,
+    moveDeltaZ,
+    barrelAngleDeg: Math.round(Math.max(8, Math.min(75, bestAngle + angleJitter))),
+    powerPct: Math.round(Math.max(22, Math.min(100, bestPower + powerJitter))),
+    turretYawRad,
   };
-}
-
-/**
- * Generate wind speed for a turn (-10.0 to +10.0 m/s)
- */
-export function generateTurnWind(weather: WeatherType, seed = Date.now()): number {
-  const rand = mulberry32(seed);
-  const maxWind = weather === 'dust' ? 10.0 : weather === 'rain' ? 8.5 : 6.5;
-  const raw = (rand() * 2 - 1) * maxWind;
-  return Math.round(raw * 10) / 10;
 }

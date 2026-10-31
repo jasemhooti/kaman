@@ -1,13 +1,20 @@
-// Procedural Web Audio Synthesizer for Kaman Duel 3D
-// Zero external MP3/WAV dependencies — generates authentic bow creaks, arrow whistle, and material impacts
+/**
+ * Pure Procedural Web Audio Synthesizer for Tank Wars 3D (جنگ تانک‌ها):
+ * - Heavy Tank Cannon Muzzle Blast (Sub-bass + Breech Clank)
+ * - Diesel Engine & Metallic Track Clatter during movement
+ * - Hydraulic Turret Servo Whir during barrel elevation
+ * - Supersonic Incoming Shell Whistle
+ * - Armor Penetration / Ricochet / Massive Tank Explosion
+ * - Coin & Supply Crate Pickup Chimes
+ */
 
-class SoundEngine {
+class TankSoundEngine {
   private ctx: AudioContext | null = null;
-  private muted = false;
+  private muted: boolean = false;
   private whistleOsc: OscillatorNode | null = null;
   private whistleGain: GainNode | null = null;
-  private whistleFilter: BiquadFilterNode | null = null;
-  private lastDrawTickTime = 0;
+  private lastServoMs: number = 0;
+  private lastTrackMs: number = 0;
 
   private ensureContext(): AudioContext | null {
     if (this.muted || typeof window === 'undefined') return null;
@@ -23,10 +30,10 @@ class SoundEngine {
     return this.ctx;
   }
 
-  public setMuted(m: boolean) {
-    this.muted = m;
-    if (m) {
-      this.stopArrowWhistle();
+  public setMuted(mute: boolean): void {
+    this.muted = mute;
+    if (mute) {
+      this.stopShellWhistle();
     }
   }
 
@@ -40,318 +47,337 @@ class SoundEngine {
   }
 
   /**
-   * Subtle wooden fiber & bowstring tension creak when adjusting draw power/angle
+   * Hydraulic turret elevation servo sound when aiming the tank barrel.
    */
-  public playBowDrawCreak(powerPct: number) {
+  public playTurretServo(powerPct: number): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastServoMs < 65) return;
+    this.lastServoMs = nowMs;
+
     const ctx = this.ensureContext();
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    if (now - this.lastDrawTickTime < 0.065) return;
-    this.lastDrawTickTime = now;
-
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
 
-    // Pitch rises with tension (powerPct 15..100)
-    const baseFreq = 95 + (powerPct / 100) * 145 + (Math.random() - 0.5) * 12;
+    const baseFreq = 140 + (powerPct / 100) * 110;
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(baseFreq, now);
-    osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.78, now + 0.045);
+    osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.08, now + 0.05);
 
+    const filter = ctx.createBiquadFilter();
     filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(340 + powerPct * 2.5, now);
-    filter.Q.setValueAtTime(4.5, now);
+    filter.frequency.value = 320;
+    filter.Q.value = 3.5;
 
-    gain.gain.setValueAtTime(0.06, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.04, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
 
     osc.connect(filter);
     filter.connect(gain);
     gain.connect(ctx.destination);
 
     osc.start(now);
-    osc.stop(now + 0.055);
+    osc.stop(now + 0.06);
   }
 
   /**
-   * Elastic bowstring twang on arrow release
+   * Diesel engine rumble and metallic track link clatter when repositioning the tank.
    */
-  public playBowRelease(powerPct: number) {
+  public playTrackMove(): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastTrackMs < 90) return;
+    this.lastTrackMs = nowMs;
+
     const ctx = this.ensureContext();
     if (!ctx) return;
-    const now = ctx.currentTime;
 
-    // 1. Resonant string harmonic
+    const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    const pitch = 135 + (powerPct / 100) * 85;
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(pitch * 1.4, now);
-    osc.frequency.exponentialRampToValueAtTime(pitch * 0.65, now + 0.22);
 
-    gain.gain.setValueAtTime(0.26, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(58, now);
+    osc.frequency.linearRampToValueAtTime(74, now + 0.06);
+    osc.frequency.linearRampToValueAtTime(52, now + 0.11);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 180;
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.11, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.13);
+  }
+
+  /**
+   * Heavy tank cannon muzzle blast (sub-bass concussion + noise burst).
+   */
+  public playCannonBlast(barrelCount: 1 | 2 = 1): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const triggerSingleBlast = (offsetSec: number) => {
+      const now = ctx.currentTime + offsetSec;
+
+      // 1. Sub-bass cannon thump
+      const osc = ctx.createOscillator();
+      const oscGain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(135, now);
+      osc.frequency.exponentialRampToValueAtTime(28, now + 0.38);
+
+      oscGain.gain.setValueAtTime(0.45, now);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+      osc.connect(oscGain);
+      oscGain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.42);
+
+      // 2. Explosive muzzle shockwave noise
+      const bufferSize = Math.floor(ctx.sampleRate * 0.32);
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.28));
+      }
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(950, now);
+      filter.frequency.exponentialRampToValueAtTime(160, now + 0.3);
+
+      const nGain = ctx.createGain();
+      nGain.gain.setValueAtTime(0.38, now);
+      nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+
+      noise.connect(filter);
+      filter.connect(nGain);
+      nGain.connect(ctx.destination);
+      noise.start(now);
+    };
+
+    triggerSingleBlast(0);
+    if (barrelCount === 2) {
+      triggerSingleBlast(0.07);
+    }
+  }
+
+  /**
+   * Starts continuous artillery shell whistle during flight.
+   */
+  public startShellWhistle(): void {
+    this.stopShellWhistle();
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(620, now);
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.045, now + 0.08);
 
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(now);
-    osc.stop(now + 0.25);
 
-    // 2. Crisp feather-fletching whoosh transient
-    this.playNoiseBurst(0.09, 1400, 2.0, 0.14);
-  }
-
-  /**
-   * Continuous aerodynamic whistle while arrow flies through the air
-   */
-  public startArrowWhistle() {
-    this.stopArrowWhistle();
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const filter = ctx.createBiquadFilter();
-    const gain = ctx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(520, now);
-
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(600, now);
-    filter.Q.setValueAtTime(6, now);
-
-    gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(0.065, now + 0.08);
-
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-
-    osc.start(now);
     this.whistleOsc = osc;
-    this.whistleFilter = filter;
     this.whistleGain = gain;
   }
 
-  public updateArrowWhistle(speed: number, heightY: number) {
-    if (!this.ctx || !this.whistleOsc || !this.whistleFilter || !this.whistleGain) return;
+  public updateShellWhistle(speed: number, vy: number): void {
+    if (!this.whistleOsc || !this.whistleGain || !this.ctx) return;
     const now = this.ctx.currentTime;
-    const normSpeed = Math.max(0.2, Math.min(1.6, speed / 26));
-    const targetFreq = 390 + normSpeed * 380 + Math.max(0, heightY) * 12;
-    this.whistleOsc.frequency.setTargetAtTime(targetFreq, now, 0.04);
-    this.whistleFilter.frequency.setTargetAtTime(targetFreq, now, 0.04);
-    this.whistleGain.gain.setTargetAtTime(Math.min(0.09, normSpeed * 0.055), now, 0.04);
+    // Falling shells whistle downward in pitch like classic artillery
+    const pitch = Math.max(260, Math.min(980, 480 + speed * 8 - Math.max(0, -vy) * 11));
+    this.whistleOsc.frequency.setTargetAtTime(pitch, now, 0.04);
   }
 
-  public stopArrowWhistle() {
+  public stopShellWhistle(): void {
+    if (this.whistleGain && this.ctx) {
+      try {
+        this.whistleGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.02);
+      } catch {
+        // Ignore
+      }
+    }
     if (this.whistleOsc) {
       try {
-        this.whistleOsc.stop();
-        this.whistleOsc.disconnect();
+        this.whistleOsc.stop(this.ctx.currentTime + 0.04);
       } catch {
-        // ignore if already stopped
+        // Ignore
       }
-      this.whistleOsc = null;
     }
-    if (this.whistleGain) {
-      this.whistleGain.disconnect();
-      this.whistleGain = null;
-    }
-    if (this.whistleFilter) {
-      this.whistleFilter.disconnect();
-      this.whistleFilter = null;
-    }
+    this.whistleOsc = null;
+    this.whistleGain = null;
   }
 
   /**
-   * Impact with flesh / armor (Headshot critical vs Body / Limbs)
+   * Armor impact (Turret critical ring vs Hull/Tracks metallic punch).
    */
-  public playImpactFlesh(isHeadshot: boolean) {
-    this.stopArrowWhistle();
+  public playImpactArmor(isCriticalTurret: boolean): void {
     const ctx = this.ensureContext();
     if (!ctx) return;
+
     const now = ctx.currentTime;
 
-    // Visceral low punch
+    // Deep armor explosion punch
     const punchOsc = ctx.createOscillator();
     const punchGain = ctx.createGain();
-    punchOsc.type = 'sine';
-    punchOsc.frequency.setValueAtTime(isHeadshot ? 175 : 130, now);
-    punchOsc.frequency.exponentialRampToValueAtTime(36, now + 0.19);
+    punchOsc.type = 'triangle';
+    punchOsc.frequency.setValueAtTime(isCriticalTurret ? 190 : 130, now);
+    punchOsc.frequency.exponentialRampToValueAtTime(32, now + 0.28);
 
-    punchGain.gain.setValueAtTime(isHeadshot ? 0.42 : 0.3, now);
-    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.21);
+    punchGain.gain.setValueAtTime(0.42, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
 
     punchOsc.connect(punchGain);
     punchGain.connect(ctx.destination);
     punchOsc.start(now);
-    punchOsc.stop(now + 0.22);
+    punchOsc.stop(now + 0.31);
 
-    // Flesh crunch noise
-    this.playNoiseBurst(0.11, 650, 1.4, 0.22);
-
-    // Critical headshot helmet/bell ring
-    if (isHeadshot) {
+    // Metallic armor clang
+    if (isCriticalTurret) {
       const ringOsc = ctx.createOscillator();
       const ringGain = ctx.createGain();
-      ringOsc.type = 'triangle';
-      ringOsc.frequency.setValueAtTime(1180, now);
-      ringOsc.frequency.exponentialRampToValueAtTime(880, now + 0.45);
+      ringOsc.type = 'sine';
+      ringOsc.frequency.setValueAtTime(980, now + 0.02);
+      ringOsc.frequency.exponentialRampToValueAtTime(520, now + 0.35);
 
-      ringGain.gain.setValueAtTime(0.22, now);
-      ringGain.gain.exponentialRampToValueAtTime(0.001, now + 0.46);
+      ringGain.gain.setValueAtTime(0.22, now + 0.02);
+      ringGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
 
       ringOsc.connect(ringGain);
       ringGain.connect(ctx.destination);
-      ringOsc.start(now);
-      ringOsc.stop(now + 0.48);
+      ringOsc.start(now + 0.02);
+      ringOsc.stop(now + 0.38);
     }
   }
 
   /**
-   * Impact with wooden barrel or timber obstacle
+   * Catastrophic Tank Explosion when HP reaches 0 (turret blow-off).
    */
-  public playImpactWood(destroyed: boolean) {
-    this.stopArrowWhistle();
+  public playTankExplosion(): void {
     const ctx = this.ensureContext();
     if (!ctx) return;
+
     const now = ctx.currentTime;
 
-    const freqs = destroyed ? [180, 245, 330, 120] : [210, 295];
-    freqs.forEach((f, idx) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'square';
-      const start = now + idx * 0.025;
-      osc.frequency.setValueAtTime(f, start);
-      osc.frequency.exponentialRampToValueAtTime(f * 0.52, start + 0.14);
+    // Massive low-frequency detonation
+    const subOsc = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    subOsc.type = 'sawtooth';
+    subOsc.frequency.setValueAtTime(95, now);
+    subOsc.frequency.exponentialRampToValueAtTime(18, now + 0.85);
 
-      gain.gain.setValueAtTime(0.16, start);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
+    subGain.gain.setValueAtTime(0.55, now);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
+    subOsc.connect(subGain);
+    subGain.connect(ctx.destination);
+    subOsc.start(now);
+    subOsc.stop(now + 0.92);
 
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.16);
-    });
-
-    this.playNoiseBurst(destroyed ? 0.26 : 0.12, 480, 1.8, destroyed ? 0.28 : 0.16);
-  }
-
-  /**
-   * Impact with stone boulder or castle wall masonry
-   */
-  public playImpactStone(destroyed: boolean) {
-    this.stopArrowWhistle();
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-
-    // Sharp flint ricochet ping
-    const ping = ctx.createOscillator();
-    const pingGain = ctx.createGain();
-    ping.type = 'sine';
-    ping.frequency.setValueAtTime(1650 + Math.random() * 250, now);
-    ping.frequency.exponentialRampToValueAtTime(420, now + 0.14);
-
-    pingGain.gain.setValueAtTime(0.2, now);
-    pingGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-
-    ping.connect(pingGain);
-    pingGain.connect(ctx.destination);
-    ping.start(now);
-    ping.stop(now + 0.16);
-
-    // Rock crumble noise
-    this.playNoiseBurst(destroyed ? 0.35 : 0.12, destroyed ? 260 : 950, 1.2, destroyed ? 0.32 : 0.18);
-  }
-
-  /**
-   * Impact with earth/sand terrain
-   */
-  public playImpactDirt() {
-    this.stopArrowWhistle();
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(95, now);
-    osc.frequency.exponentialRampToValueAtTime(32, now + 0.14);
-
-    gain.gain.setValueAtTime(0.22, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.16);
-
-    this.playNoiseBurst(0.1, 320, 1.1, 0.14);
-  }
-
-  /**
-   * Victory or Defeat fanfare sting
-   */
-  public playMatchEnd(victory: boolean) {
-    this.stopArrowWhistle();
-    const ctx = this.ensureContext();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-
-    const notes = victory ? [261.63, 329.63, 392.0, 523.25] : [293.66, 261.63, 220.0, 174.61];
-    notes.forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'triangle';
-      const t = now + i * 0.12;
-      osc.frequency.setValueAtTime(freq, t);
-
-      gain.gain.setValueAtTime(0.18, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.38);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(t);
-      osc.stop(t + 0.4);
-    });
-  }
-
-  private playNoiseBurst(duration: number, centerFreq: number, q: number, volume: number) {
-    if (!this.ctx) return;
-    const ctx = this.ctx;
-    const now = ctx.currentTime;
-    const bufferSize = Math.floor(ctx.sampleRate * duration);
+    // Long rumble noise
+    const bufferSize = Math.floor(ctx.sampleRate * 0.85);
     const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.45));
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.42));
     }
 
     const noise = ctx.createBufferSource();
     noise.buffer = buffer;
 
     const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(centerFreq, now);
-    filter.Q.setValueAtTime(q, now);
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(620, now);
+    filter.frequency.exponentialRampToValueAtTime(90, now + 0.8);
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(volume, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.48, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.85);
 
     noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-
+    filter.connect(nGain);
+    nGain.connect(ctx.destination);
     noise.start(now);
-    noise.stop(now + duration);
+  }
+
+  public playImpactGround(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(92, now);
+    osc.frequency.exponentialRampToValueAtTime(26, now + 0.22);
+
+    gain.gain.setValueAtTime(0.28, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.25);
+  }
+
+  public playCratePickup(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.07);
+      gain.gain.setValueAtTime(0.14, now + idx * 0.07);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.07 + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.07);
+      osc.stop(now + idx * 0.07 + 0.24);
+    });
+  }
+
+  public playMatchEnd(victory: boolean): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const notes = victory ? [261.63, 329.63, 392.0, 523.25] : [311.13, 277.18, 246.94, 196.0];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      const start = now + idx * 0.11;
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.14, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.34);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.35);
+    });
   }
 }
 
-export const soundEngine = new SoundEngine();
+export const soundEngine = new TankSoundEngine();
