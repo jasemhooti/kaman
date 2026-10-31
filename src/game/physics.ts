@@ -10,7 +10,7 @@ export interface TankModelSpec {
   price: number; // 0 for the first 3 unlocked tanks
   armorMultiplier: number;
   damageMultiplier: number;
-  moveFuelMax: number; // meters per turn
+  moveFuelMax: number; // speed / mobility rating
   barrelCount: 1 | 2;
   hullColor: string;
   turretColor: string;
@@ -42,8 +42,10 @@ export interface TankCombatState {
   y: number;
   z: number;
   slopeAngle: number;
-  facing: 1 | -1; // 1 = facing +X, -1 = facing -X
-  turretYawRad: number; // horizontal aim offset
+  rollAngle?: number;
+  hullYaw?: number; // 360-degree open-world hull heading in radians (0 = +X, PI = -X)
+  facing: 1 | -1; // 1 = facing +X, -1 = facing -X (legacy/fallback direction)
+  turretYawRad: number; // horizontal turret aim offset relative to hull/facing
   barrelAngleDeg: number; // elevation angle (5 to 75 deg)
   powerPct: number; // 20 to 100%
   hp: number;
@@ -57,15 +59,25 @@ export interface TankCombatState {
   lastLandingX: number | null;
 }
 
+export type ObstacleKind =
+  | 'bunker'
+  | 'fuel_tank'
+  | 'rock'
+  | 'wall'
+  | 'watchtower'
+  | 'radar_dome'
+  | 'warehouse';
+
 export interface DestructibleObstacle {
   id: string;
-  kind: 'bunker' | 'fuel_tank' | 'rock' | 'wall';
+  kind: ObstacleKind;
   x: number;
   y: number;
   z: number;
   width: number;
   height: number;
   depth: number;
+  rotationY?: number;
   hp: number;
   maxHp: number;
   destroyed: boolean;
@@ -78,7 +90,7 @@ export interface SupplyCrate {
   y: number;
   z: number;
   collected: boolean;
-  value: number; // +25% HP or +50 coins
+  value: number; // +25% HP or +55 coins
 }
 
 export interface TerrainCrater {
@@ -94,7 +106,8 @@ export interface BattlefieldConfig {
   stageNumber: number;
   biome: BiomeType;
   biomeTitle: string;
-  distance: number; // 54m to 78m between tanks
+  worldSize: number; // 260m x 260m Open World
+  distance: number; // initial spawn separation between tanks
   leftHillHeight: number;
   rightHillHeight: number;
   centerRidgeHeight: number;
@@ -129,8 +142,9 @@ export interface HitDetectionResult {
 }
 
 export const GRAVITY = 9.81;
-export const MIN_MUZZLE_SPEED = 14;
-export const MAX_MUZZLE_SPEED = 42;
+export const MIN_MUZZLE_SPEED = 16;
+export const MAX_MUZZLE_SPEED = 48;
+export const OPEN_WORLD_RADIUS = 108; // Navigable radius inside 260m x 260m world
 // Short trajectory guide line right next to the tank barrel (4.6 meters)
 export const TRAJECTORY_PREVIEW_MAX_METERS = 4.6;
 
@@ -148,13 +162,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 0,
     armorMultiplier: 1.0,
     damageMultiplier: 1.0,
-    moveFuelMax: 5.5,
+    moveFuelMax: 8.5,
     barrelCount: 1,
-    hullColor: '#4b5842',
-    turretColor: '#3d4836',
+    hullColor: '#5c6b4d',
+    turretColor: '#4a573d',
     accentColor: '#d97706',
     scale: 1.0,
-    description: 'تانک چابک خط مقدم با زره واکنشی و چرخش سریع برجک',
+    description: 'تانک چابک جهان‌آزاد با زره واکنشی و چرخش سریع برجک',
   },
   {
     id: 'saeqeh_2',
@@ -164,13 +178,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 0,
     armorMultiplier: 1.05,
     damageMultiplier: 1.05,
-    moveFuelMax: 5.2,
+    moveFuelMax: 8.8,
     barrelCount: 1,
-    hullColor: '#a6895b',
-    turretColor: '#8c7147',
+    hullColor: '#b89762',
+    turretColor: '#9c7e4e',
     accentColor: '#ea580c',
     scale: 1.03,
-    description: 'تانک استتار صحرایی با پایداری بالا روی تپه‌های شنی',
+    description: 'تانک استتار صحرایی با پایداری عالی در تپه‌های شنی جهان‌آزاد',
   },
   {
     id: 'aghrab_3',
@@ -180,13 +194,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 0,
     armorMultiplier: 1.09,
     damageMultiplier: 1.08,
-    moveFuelMax: 5.4,
+    moveFuelMax: 9.0,
     barrelCount: 1,
-    hullColor: '#475569',
-    turretColor: '#334155',
+    hullColor: '#56677d',
+    turretColor: '#435266',
     accentColor: '#0284c7',
     scale: 1.05,
-    description: 'شاسی پهن زرهی با سیستم تعلیق مقاوم در برابر موج انفجار',
+    description: 'شاسی پهن زرهی با سیستم تعلیق مستقل برای نبردهای جهان‌آزاد',
   },
   {
     id: 'babr_4',
@@ -196,10 +210,10 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 150,
     armorMultiplier: 1.16,
     damageMultiplier: 1.16,
-    moveFuelMax: 5.6,
+    moveFuelMax: 9.2,
     barrelCount: 1,
-    hullColor: '#3f6212',
-    turretColor: '#365314',
+    hullColor: '#4d6f28',
+    turretColor: '#3f5c20',
     accentColor: '#65a30d',
     scale: 1.08,
     description: 'زره کامپوزیت چندلایه و توپ ۱۲۰ میلی‌متری دوربرد',
@@ -212,13 +226,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 320,
     armorMultiplier: 1.25,
     damageMultiplier: 1.25,
-    moveFuelMax: 5.8,
+    moveFuelMax: 9.5,
     barrelCount: 1,
-    hullColor: '#52525b',
-    turretColor: '#3f3f46',
+    hullColor: '#63666a',
+    turretColor: '#4f5256',
     accentColor: '#ea580c',
     scale: 1.1,
-    description: 'مجهز به بلوک‌های زره واکنشی انفجاری و موتور توربودیزل',
+    description: 'مجهز به بلوک‌های زره واکنشی انفجاری و موتور توربودیزل ۱۲۰۰ اسب‌بخار',
   },
   {
     id: 'shahab_6',
@@ -228,10 +242,10 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 550,
     armorMultiplier: 1.36,
     damageMultiplier: 1.36,
-    moveFuelMax: 6.0,
+    moveFuelMax: 9.8,
     barrelCount: 1,
-    hullColor: '#1e3a8a',
-    turretColor: '#172554',
+    hullColor: '#2d4a7c',
+    turretColor: '#223860',
     accentColor: '#3b82f6',
     scale: 1.13,
     description: 'تانک سنگین کالیبر ۱۲۵ میلی‌متری با قدرت تخریب سنگر بالا',
@@ -244,10 +258,10 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 850,
     armorMultiplier: 1.48,
     damageMultiplier: 1.48,
-    moveFuelMax: 6.2,
+    moveFuelMax: 10.2,
     barrelCount: 2,
-    hullColor: '#7f1d1d',
-    turretColor: '#5c1414',
+    hullColor: '#8c2d2d',
+    turretColor: '#6e2222',
     accentColor: '#ef4444',
     scale: 1.16,
     description: 'برجک دو لول هم‌زمان با شاسی فوق‌سنگین و زره مقاوم',
@@ -260,10 +274,10 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 1250,
     armorMultiplier: 1.62,
     damageMultiplier: 1.62,
-    moveFuelMax: 6.5,
+    moveFuelMax: 10.6,
     barrelCount: 2,
-    hullColor: '#334155',
-    turretColor: '#1e293b',
+    hullColor: '#4b5b6e',
+    turretColor: '#384657',
     accentColor: '#06b6d4',
     scale: 1.2,
     description: 'بدنه تیتانیومی ضدنفوذ با دو توپ موازی کالیبر سنگین',
@@ -276,13 +290,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 1800,
     armorMultiplier: 1.78,
     damageMultiplier: 1.78,
-    moveFuelMax: 7.0,
+    moveFuelMax: 11.2,
     barrelCount: 2,
-    hullColor: '#27272a',
-    turretColor: '#18181b',
+    hullColor: '#3f4248',
+    turretColor: '#2d3036',
     accentColor: '#9333ea',
     scale: 1.22,
-    description: 'تانک نسل پنجم رادارگریز با سامانه نشانه‌گیری لیزری',
+    description: 'تانک نسل پنجم رادارگریز با سامانه نشانه‌گیری حرارتی',
   },
   {
     id: 'emperor_10',
@@ -292,10 +306,10 @@ export const TANK_CATALOG: TankModelSpec[] = [
     price: 2500,
     armorMultiplier: 1.98,
     damageMultiplier: 1.95,
-    moveFuelMax: 7.5,
+    moveFuelMax: 12.0,
     barrelCount: 2,
-    hullColor: '#78350f',
-    turretColor: '#451a03',
+    hullColor: '#8c6229',
+    turretColor: '#6e4b1c',
     accentColor: '#eab308',
     scale: 1.26,
     description: 'قوی‌ترین ابرتانک دو لول بازی با زره طلایی-تیتانیوم و قدرت ویرانگر',
@@ -313,8 +327,8 @@ export const SHELL_CATALOG: ShellSpec[] = [
     minTankIndex: 0,
     damageMultiplier: 1.0,
     muzzleVelocityMultiplier: 1.0,
-    blastRadius: 2.6,
-    craterDepth: 0.72,
+    blastRadius: 2.8,
+    craterDepth: 0.78,
     colorHex: 0xf59e0b,
     badgeColor: '#f59e0b',
     description: 'مهمات نامحدود پایه با تعادل عالی بین سرعت و قدرت انفجار',
@@ -325,9 +339,9 @@ export const SHELL_CATALOG: ShellSpec[] = [
     price: 200,
     minTankIndex: 0,
     damageMultiplier: 1.22,
-    muzzleVelocityMultiplier: 1.08,
-    blastRadius: 2.8,
-    craterDepth: 0.85,
+    muzzleVelocityMultiplier: 1.1,
+    blastRadius: 3.0,
+    craterDepth: 0.9,
     colorHex: 0x38bdf8,
     badgeColor: '#38bdf8',
     description: 'سرعت دهانه بالاتر و +۲۲٪ تخریب بیشتر روی زره و برجک تانک (مهمات نامحدود)',
@@ -339,8 +353,8 @@ export const SHELL_CATALOG: ShellSpec[] = [
     minTankIndex: 2,
     damageMultiplier: 1.38,
     muzzleVelocityMultiplier: 0.96,
-    blastRadius: 3.8,
-    craterDepth: 1.15,
+    blastRadius: 4.0,
+    craterDepth: 1.22,
     colorHex: 0xf97316,
     badgeColor: '#f97316',
     description: 'موج انفجار وسیع، گودال عمیق و +۳۸٪ قدرت تخریب روی تانک و سنگرها (مهمات نامحدود)',
@@ -351,9 +365,9 @@ export const SHELL_CATALOG: ShellSpec[] = [
     price: 900,
     minTankIndex: 4,
     damageMultiplier: 1.6,
-    muzzleVelocityMultiplier: 1.05,
-    blastRadius: 4.5,
-    craterDepth: 1.4,
+    muzzleVelocityMultiplier: 1.06,
+    blastRadius: 4.8,
+    craterDepth: 1.48,
     colorHex: 0xa855f7,
     badgeColor: '#a855f7',
     description: 'قوی‌ترین گلوله حرارتی با +۶۰٪ تخریب مرگبار و حفر گودال عمیق (مهمات نامحدود)',
@@ -370,33 +384,35 @@ export function seededRandom(seed: number): () => number {
 }
 
 const BIOME_LIST: Array<{ biome: BiomeType; title: string }> = [
-  { biome: 'desert', title: 'صحرای طلایی · طوفان شن' },
-  { biome: 'snow', title: 'ارتفاعات برفی · کولاک کوهستان' },
-  { biome: 'industrial', title: 'منطقه صنعتی · باران اسیدی' },
-  { biome: 'volcanic', title: 'دره آتشفشانی · بارش خاکستر' },
-  { biome: 'night', title: 'پایگاه راداری شبانه · مه جنگی' },
+  { biome: 'desert', title: 'صحرای طلایی سینا · جهان‌آزاد' },
+  { biome: 'snow', title: 'ارتفاعات برفی قفقاز · جهان‌آزاد' },
+  { biome: 'industrial', title: 'پالایشگاه صنعتی · جهان‌آزاد' },
+  { biome: 'volcanic', title: 'دره آتشفشانی بازالت · جهان‌آزاد' },
+  { biome: 'night', title: 'پایگاه راداری شبانه · جهان‌آزاد' },
 ];
 
 /**
- * Generates a unique, larger 3D battlefield map for each stage with hills, obstacles, and supply crates.
+ * Generates an expansive 260m x 260m 3D Open-World battlefield map for each stage
+ * with 2D hills, valleys, military bases, watchtowers, radar domes, bunkers, fuel depots, and supply crates.
  */
 export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber: number = 1): BattlefieldConfig {
   const rng = seededRandom(seed + stageNumber * 7919);
   const biomeEntry = BIOME_LIST[(stageNumber - 1) % BIOME_LIST.length];
 
-  const distance = Math.round(54 + rng() * 20 + Math.min(10, stageNumber * 1.2));
-  const leftHillHeight = Number(((rng() - 0.35) * 4.6).toFixed(2));
-  const rightHillHeight = Number(((rng() - 0.35) * 4.6).toFixed(2));
-  const centerRidgeHeight = Number((0.8 + rng() * 3.2).toFixed(2));
-  const centerRidgeX = Number(((rng() - 0.5) * 14).toFixed(2));
-  const roughnessFreq = Number((0.09 + rng() * 0.06).toFixed(3));
-  const roughnessAmp = Number((0.25 + rng() * 0.32).toFixed(2));
+  const distance = Math.round(56 + rng() * 18 + Math.min(12, stageNumber * 1.2));
+  const leftHillHeight = Number(((rng() - 0.35) * 4.4).toFixed(2));
+  const rightHillHeight = Number(((rng() - 0.35) * 4.4).toFixed(2));
+  const centerRidgeHeight = Number((0.9 + rng() * 2.8).toFixed(2));
+  const centerRidgeX = Number(((rng() - 0.5) * 16).toFixed(2));
+  const roughnessFreq = Number((0.065 + rng() * 0.045).toFixed(3));
+  const roughnessAmp = Number((0.45 + rng() * 0.45).toFixed(2));
 
   const tempArena: BattlefieldConfig = {
     seed,
     stageNumber,
     biome: biomeEntry.biome,
     biomeTitle: biomeEntry.title,
+    worldSize: 260,
     distance,
     leftHillHeight,
     rightHillHeight,
@@ -409,69 +425,58 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
     craters: [],
   };
 
-  const obstacleKinds: DestructibleObstacle['kind'][] = ['bunker', 'fuel_tank', 'rock', 'wall'];
-  const count = 3 + (rng() > 0.45 ? 1 : 0);
-  const span = distance * 0.46;
   const obstacles: DestructibleObstacle[] = [];
+  const halfDist = distance * 0.5;
 
-  for (let i = 0; i < count; i++) {
-    const t = count === 1 ? 0 : i / (count - 1) - 0.5;
+  // 1. Central Valley Tactical Cover (3-4 obstacles between initial tank spawns)
+  const centerKinds: ObstacleKind[] = ['bunker', 'fuel_tank', 'rock', 'wall'];
+  const centerCount = 3 + (rng() > 0.45 ? 1 : 0);
+  const span = distance * 0.48;
+  for (let i = 0; i < centerCount; i++) {
+    const t = centerCount === 1 ? 0 : i / (centerCount - 1) - 0.5;
     const ox = Number((t * span + (rng() - 0.5) * 4.5).toFixed(2));
-    const oz = Number(((rng() - 0.5) * 3.2).toFixed(2));
-    const kind = obstacleKinds[Math.floor(rng() * obstacleKinds.length)];
-    const oy = terrainHeightAt(ox, tempArena, oz);
-
-    let width = 2.6;
-    let height = 2.5;
-    let depth = 2.6;
-    let maxHp = 75;
-
-    if (kind === 'fuel_tank') {
-      width = 2.0;
-      height = 2.5;
-      depth = 2.0;
-      maxHp = 45;
-    } else if (kind === 'bunker') {
-      width = 3.6;
-      height = 2.7;
-      depth = 3.2;
-      maxHp = 110;
-    } else if (kind === 'wall') {
-      width = 2.4;
-      height = 3.2;
-      depth = 3.8;
-      maxHp = 130;
-    } else {
-      width = 3.0;
-      height = 2.6;
-      depth = 2.8;
-      maxHp = 95;
-    }
-
-    obstacles.push({
-      id: `obs-${i}-${Math.floor(rng() * 10000)}`,
-      kind,
-      x: ox,
-      y: oy,
-      z: oz,
-      width,
-      height,
-      depth,
-      hp: maxHp,
-      maxHp,
-      destroyed: false,
-    });
+    const oz = Number(((rng() - 0.5) * 14.0).toFixed(2));
+    const kind = centerKinds[Math.floor(rng() * centerKinds.length)];
+    obstacles.push(createObstacleData(`obs-c-${i}`, kind, ox, oz, rng() * Math.PI * 2, tempArena));
   }
 
-  const halfDist = distance * 0.5;
-  const healCrateX = Number((-halfDist + 4.4 + rng() * 3.0).toFixed(2));
+  // 2. Open-World Military Outposts, Watchtowers, Radar Stations & Rock Outcrops across 200m x 200m
+  const openWorldPlacements: Array<{ kind: ObstacleKind; x: number; z: number }> = [
+    { kind: 'watchtower', x: -34, z: -28 },
+    { kind: 'radar_dome', x: 18, z: -36 },
+    { kind: 'warehouse', x: -12, z: 34 },
+    { kind: 'bunker', x: 32, z: 26 },
+    { kind: 'fuel_tank', x: -8, z: 30 },
+    { kind: 'watchtower', x: 48, z: -24 },
+    { kind: 'rock', x: -52, z: 24 },
+    { kind: 'rock', x: 54, z: 32 },
+    { kind: 'wall', x: -22, z: -18 },
+    { kind: 'bunker', x: 24, z: -16 },
+    { kind: 'warehouse', x: -46, z: -42 },
+    { kind: 'fuel_tank', x: 42, z: 40 },
+  ];
+
+  openWorldPlacements.forEach((p, idx) => {
+    const jitterX = Number((p.x + (rng() - 0.5) * 8).toFixed(2));
+    const jitterZ = Number((p.z + (rng() - 0.5) * 8).toFixed(2));
+    // Keep initial spawn zones clear
+    if (Math.hypot(jitterX + halfDist, jitterZ) < 10 || Math.hypot(jitterX - halfDist, jitterZ) < 10) {
+      return;
+    }
+    obstacles.push(
+      createObstacleData(`obs-ow-${idx}`, p.kind, jitterX, jitterZ, rng() * Math.PI * 2, tempArena)
+    );
+  });
+
+  // 3. Supply Crates scattered across the Open World (first 2 near central corridor, 4 more in open world)
+  const healCrateX = Number((-halfDist + 5.5 + rng() * 3.0).toFixed(2));
   const coinCrateX = Number(((rng() - 0.5) * (distance * 0.35)).toFixed(2));
-  const healZ = Number(((rng() - 0.5) * 2.4).toFixed(2));
-  const coinZ = Number(((rng() - 0.5) * 2.4).toFixed(2));
+  const healZ = Number(((rng() - 0.5) * 4.0).toFixed(2));
+  const coinZ = Number(((rng() - 0.5) * 4.0).toFixed(2));
 
   const crates: SupplyCrate[] = [
     {
-      id: `crate-heal-${stageNumber}`,
+      id: `crate-heal-${stageNumber}-1`,
       kind: 'heal',
       x: healCrateX,
       y: terrainHeightAt(healCrateX, tempArena, healZ),
@@ -480,13 +485,31 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
       value: 25,
     },
     {
-      id: `crate-coin-${stageNumber}`,
+      id: `crate-coin-${stageNumber}-1`,
       kind: 'coins',
       x: coinCrateX,
       y: terrainHeightAt(coinCrateX, tempArena, coinZ),
       z: coinZ,
       collected: false,
       value: 55 + stageNumber * 10,
+    },
+    {
+      id: `crate-heal-${stageNumber}-2`,
+      kind: 'heal',
+      x: 16,
+      y: terrainHeightAt(16, tempArena, 24),
+      z: 24,
+      collected: false,
+      value: 25,
+    },
+    {
+      id: `crate-coin-${stageNumber}-2`,
+      kind: 'coins',
+      x: -24,
+      y: terrainHeightAt(-24, tempArena, -22),
+      z: -22,
+      collected: false,
+      value: 65 + stageNumber * 12,
     },
   ];
 
@@ -495,31 +518,119 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
   return tempArena;
 }
 
+function createObstacleData(
+  id: string,
+  kind: ObstacleKind,
+  x: number,
+  z: number,
+  rotationY: number,
+  arena: BattlefieldConfig
+): DestructibleObstacle {
+  const y = terrainHeightAt(x, arena, z);
+  let width = 3.2;
+  let height = 2.8;
+  let depth = 3.2;
+  let maxHp = 95;
+
+  if (kind === 'fuel_tank') {
+    width = 2.4;
+    height = 3.0;
+    depth = 2.4;
+    maxHp = 50;
+  } else if (kind === 'bunker') {
+    width = 4.2;
+    height = 2.9;
+    depth = 3.8;
+    maxHp = 120;
+  } else if (kind === 'wall') {
+    width = 2.6;
+    height = 3.2;
+    depth = 4.4;
+    maxHp = 135;
+  } else if (kind === 'watchtower') {
+    width = 3.8;
+    height = 7.8;
+    depth = 3.8;
+    maxHp = 90;
+  } else if (kind === 'radar_dome') {
+    width = 4.6;
+    height = 5.6;
+    depth = 4.6;
+    maxHp = 110;
+  } else if (kind === 'warehouse') {
+    width = 6.4;
+    height = 4.2;
+    depth = 4.8;
+    maxHp = 150;
+  } else {
+    width = 3.6;
+    height = 2.8;
+    depth = 3.4;
+    maxHp = 100;
+  }
+
+  return {
+    id,
+    kind,
+    x,
+    y,
+    z,
+    width,
+    height,
+    depth,
+    rotationY,
+    hp: maxHp,
+    maxHp,
+    destroyed: false,
+  };
+}
+
 /**
- * Evaluates smooth natural terrain height y at (x, z), including dynamic shell impact craters!
+ * Evaluates smooth natural 2D Open-World terrain height y at (x, z),
+ * including 2D hills, valley roads, perimeter mountain ridges, and dynamic shell impact craters!
  */
 export function terrainHeightAt(x: number, arena: BattlefieldConfig, z: number = 0): number {
   const halfDist = arena.distance * 0.5;
 
-  const leftDist = x - -halfDist;
-  const leftHill = arena.leftHillHeight * Math.exp(-(leftDist * leftDist) / 85);
+  const leftDistSq = (x - -halfDist) * (x - -halfDist) + z * z * 0.35;
+  const leftHill = arena.leftHillHeight * Math.exp(-leftDistSq / 140);
 
-  const rightDist = x - halfDist;
-  const rightHill = arena.rightHillHeight * Math.exp(-(rightDist * rightDist) / 85);
+  const rightDistSq = (x - halfDist) * (x - halfDist) + z * z * 0.35;
+  const rightHill = arena.rightHillHeight * Math.exp(-rightDistSq / 140);
 
-  const centerDist = x - arena.centerRidgeX;
-  const centerRidge = arena.centerRidgeHeight * Math.exp(-(centerDist * centerDist) / 105);
+  const centerDistSq = (x - arena.centerRidgeX) * (x - arena.centerRidgeX) + (z - 4) * (z - 4) * 0.25;
+  const centerRidge = arena.centerRidgeHeight * Math.exp(-centerDistSq / 180);
 
+  // 2D Open-World Rolling Hills & Dunes across X and Z
   const platformMask =
     1 -
-    0.75 * Math.exp(-(leftDist * leftDist) / 24) -
-    0.75 * Math.exp(-(rightDist * rightDist) / 24);
-  const microRoughness =
-    (Math.sin(x * arena.roughnessFreq + z * 0.08) *
-      Math.cos(x * arena.roughnessFreq * 0.61 - z * 0.06) +
-      0.35 * Math.sin(x * 0.23 + z * 0.19)) *
+    0.72 * Math.exp(-leftDistSq / 32) -
+    0.72 * Math.exp(-rightDistSq / 32);
+
+  const openWorldUndulation =
+    (Math.sin(x * arena.roughnessFreq + z * 0.045) *
+      Math.cos(x * arena.roughnessFreq * 0.58 - z * 0.052) +
+      0.48 * Math.sin(x * 0.032 - z * 0.041) +
+      0.28 * Math.cos(x * 0.14 + z * 0.13)) *
     arena.roughnessAmp *
-    Math.max(0, platformMask);
+    Math.max(0.15, platformMask);
+
+  // Flatten slightly along the winding military road (z ≈ 14 * sin(x * 0.03))
+  const roadCenterZ = 14 * Math.sin(x * 0.03);
+  const distFromRoad = Math.abs(z - roadCenterZ);
+  const roadFlatten = distFromRoad < 5.5 ? 1 - 0.55 * Math.cos((distFromRoad / 5.5) * Math.PI * 0.5) : 1.0;
+
+  // Natural Outer Mountain Range Rim beyond radius 92m so the Open World is bounded by realistic peaks
+  const radialDist = Math.hypot(x, z);
+  let mountainRim = 0;
+  if (radialDist > 88) {
+    const rimT = (radialDist - 88) / 42;
+    const ridgeWave =
+      0.65 +
+      0.35 * Math.sin(Math.atan2(z, x) * 7 + arena.seed * 0.01) +
+      0.2 * Math.cos(x * 0.08 + z * 0.08);
+    mountainRim = Math.min(24, rimT * rimT * 14.5 * ridgeWave);
+  }
 
   // Subtract dynamic impact craters (bowl depression + subtle raised rim)
   let craterDelta = 0;
@@ -529,10 +640,8 @@ export function terrainHeightAt(x: number, arena: BattlefieldConfig, z: number =
       if (d < c.radius * 1.35) {
         const u = d / c.radius;
         if (u <= 1.0) {
-          // Deep parabolic-cosine crater bowl
           craterDelta -= c.depth * Math.cos(u * Math.PI * 0.5) * (1 - u * u * 0.35);
         } else {
-          // Raised blast ejecta rim between 1.0R and 1.35R
           const rimT = (u - 1.0) / 0.35;
           craterDelta += c.depth * 0.18 * Math.sin(rimT * Math.PI);
         }
@@ -540,21 +649,56 @@ export function terrainHeightAt(x: number, arena: BattlefieldConfig, z: number =
     }
   }
 
-  return leftHill + rightHill + centerRidge + microRoughness + craterDelta;
+  return (leftHill + rightHill + centerRidge + openWorldUndulation) * roadFlatten + mountainRim + craterDelta;
 }
 
 /**
- * Computes terrain slope angle (in radians) at (x, z) so the tank hull tilts naturally on slopes and craters.
+ * Computes terrain slope angle (in radians) at (x, z) along X or along a custom heading angle.
  */
-export function terrainSlopeAt(x: number, arena: BattlefieldConfig, z: number = 0): number {
-  const delta = 0.6;
-  const y1 = terrainHeightAt(x - delta, arena, z);
-  const y2 = terrainHeightAt(x + delta, arena, z);
+export function terrainSlopeAt(
+  x: number,
+  arena: BattlefieldConfig,
+  z: number = 0,
+  headingRad: number = 0
+): number {
+  const delta = 0.7;
+  const dx = Math.cos(headingRad) * delta;
+  const dz = Math.sin(headingRad) * delta;
+  const y1 = terrainHeightAt(x - dx, arena, z - dz);
+  const y2 = terrainHeightAt(x + dx, arena, z + dz);
   return Math.atan2(y2 - y1, delta * 2);
 }
 
 /**
- * Generates dynamic wind speed in [-10, +10] m/s for the current turn.
+ * Computes lateral terrain roll angle perpendicular to the tank's heading.
+ */
+export function terrainRollAt(
+  x: number,
+  arena: BattlefieldConfig,
+  z: number = 0,
+  headingRad: number = 0
+): number {
+  const delta = 0.7;
+  const rx = -Math.sin(headingRad) * delta;
+  const rz = Math.cos(headingRad) * delta;
+  const yLeft = terrainHeightAt(x - rx, arena, z - rz);
+  const yRight = terrainHeightAt(x + rx, arena, z + rz);
+  return Math.atan2(yRight - yLeft, delta * 2);
+}
+
+/**
+ * Returns the tank's world aim yaw in the XZ plane (0 = +X, PI/2 = +Z, PI = -X).
+ * Combines 360-degree hullYaw (if present) or facing (+1/-1) with turretYawRad.
+ */
+export function getTankWorldAimYaw(tank: TankCombatState): number {
+  if (typeof tank.hullYaw === 'number') {
+    return tank.hullYaw + tank.turretYawRad;
+  }
+  return tank.facing === 1 ? tank.turretYawRad : Math.PI - tank.turretYawRad;
+}
+
+/**
+ * Generates dynamic wind speed in [-10, +10] m/s.
  */
 export function generateTurnWind(biome: BiomeType, seed: number = Date.now()): number {
   const rng = seededRandom(seed);
@@ -570,18 +714,19 @@ export function powerToMuzzleVelocity(powerPct: number, shellMultiplier = 1.0): 
 }
 
 /**
- * Returns the world 3D coordinates of the tank's cannon muzzle tip.
+ * Returns the world 3D coordinates of the tank's cannon muzzle tip in 360-degree open-world space.
  */
 export function getTankMuzzleOrigin(tank: TankCombatState): { x: number; y: number; z: number } {
   const angleRad = (tank.barrelAngleDeg * Math.PI) / 180;
-  const dir = tank.facing;
   const scale = tank.model.scale;
-  const turretPivotY = tank.y + 1.48 * scale;
-  const barrelLen = 3.35 * scale;
+  const turretPivotY = tank.y + 1.52 * scale;
+  const barrelLen = 3.45 * scale;
+  const worldYaw = getTankWorldAimYaw(tank);
 
-  const mx = tank.x + dir * Math.cos(angleRad) * barrelLen * Math.cos(tank.turretYawRad);
+  const horizReach = Math.cos(angleRad) * barrelLen;
+  const mx = tank.x + horizReach * Math.cos(worldYaw);
   const my = turretPivotY + Math.sin(angleRad) * barrelLen;
-  const mz = tank.z + Math.cos(angleRad) * barrelLen * Math.sin(tank.turretYawRad);
+  const mz = tank.z + horizReach * Math.sin(worldYaw);
   return { x: mx, y: my, z: mz };
 }
 
@@ -596,7 +741,7 @@ export function stepProjectile(
   const windAccel = windSpeed * 0.52;
   const nextVx = state.vx + windAccel * dt;
   const nextVy = state.vy - GRAVITY * dt;
-  const nextVz = state.vz * (1 - 0.05 * dt);
+  const nextVz = state.vz * (1 - 0.04 * dt);
 
   return {
     x: state.x + state.vx * dt + 0.5 * windAccel * dt * dt,
@@ -621,15 +766,15 @@ export function computeShortTrajectoryPreview(
   const origin = getTankMuzzleOrigin(tank);
   const speed = powerToMuzzleVelocity(tank.powerPct, tank.shell.muzzleVelocityMultiplier);
   const angleRad = (tank.barrelAngleDeg * Math.PI) / 180;
-  const dir = tank.facing;
+  const worldYaw = getTankWorldAimYaw(tank);
 
   let current: TrajectoryPoint = {
     x: origin.x,
     y: origin.y,
     z: origin.z,
-    vx: dir * speed * Math.cos(angleRad) * Math.cos(tank.turretYawRad),
+    vx: speed * Math.cos(angleRad) * Math.cos(worldYaw),
     vy: speed * Math.sin(angleRad),
-    vz: speed * Math.cos(angleRad) * Math.sin(tank.turretYawRad),
+    vz: speed * Math.cos(angleRad) * Math.sin(worldYaw),
     t: 0,
   };
 
@@ -661,10 +806,10 @@ export function computeShortTrajectoryPreview(
 }
 
 /**
- * Checks 3D localized tank hitboxes:
+ * Checks 3D localized tank hitboxes in 360-degree space:
  * - Turret / Weakspot ('turret'): Critical Damage (38% to 52% base HP, scaled by shell & tank power)
  * - Main Hull ('hull'): Medium Damage (24% to 34% base HP)
- * - Tracks / Wheels ('tracks'): Lower Damage (14% to 20% base HP + slows movement next turn)
+ * - Tracks / Wheels ('tracks'): Lower Damage (14% to 20% base HP + slows movement)
  */
 export function checkTankHitbox(
   px: number,
@@ -673,34 +818,35 @@ export function checkTankHitbox(
   tank: TankCombatState,
   attacker: TankCombatState
 ): { hitZone: HitZone; damage: number } | null {
-  if (py < tank.y - 0.3 || py > tank.y + 3.2 * tank.model.scale) return null;
+  if (py < tank.y - 0.35 || py > tank.y + 3.25 * tank.model.scale) return null;
 
   const s = tank.model.scale;
+  const radialDist = Math.hypot(px - tank.x, pz - tank.z);
   const dx = Math.abs(px - tank.x);
   const dz = Math.abs(pz - tank.z);
 
-  const zLimit = 1.85 * s + (attacker.shell.blastRadius - 2.2) * 0.35;
-  if (dz > zLimit) return null;
+  const zLimit = 2.05 * s + Math.max(0, (attacker.shell.blastRadius - 2.2) * 0.35);
+  if (dz > zLimit && radialDist > 2.65 * s) return null;
 
   const relY = (py - tank.y) / s;
   const combatRatio =
     (attacker.model.damageMultiplier * attacker.shell.damageMultiplier) /
     Math.max(0.8, tank.model.armorMultiplier);
 
-  if (relY >= 1.28 && relY <= 2.35 && dx <= 1.45 * s) {
-    const centerFactor = 1 - Math.min(1, dx / (1.45 * s));
+  if (relY >= 1.28 && relY <= 2.38 && dx <= 1.55 * s) {
+    const centerFactor = 1 - Math.min(1, dx / (1.55 * s));
     const rawDamage = (38 + centerFactor * 14) * combatRatio;
     return { hitZone: 'turret', damage: Math.round(Math.max(25, Math.min(95, rawDamage))) };
   }
 
-  if (relY >= 0.62 && relY < 1.28 && dx <= 2.35 * s) {
-    const centerFactor = 1 - Math.min(1, dx / (2.35 * s));
+  if (relY >= 0.62 && relY < 1.28 && dx <= 2.45 * s) {
+    const centerFactor = 1 - Math.min(1, dx / (2.45 * s));
     const rawDamage = (24 + centerFactor * 10) * combatRatio;
     return { hitZone: 'hull', damage: Math.round(Math.max(16, Math.min(65, rawDamage))) };
   }
 
-  if (relY >= 0.0 && relY < 0.62 && dx <= 2.55 * s) {
-    const centerFactor = 1 - Math.min(1, dx / (2.55 * s));
+  if (relY >= 0.0 && relY < 0.62 && dx <= 2.65 * s) {
+    const centerFactor = 1 - Math.min(1, dx / (2.65 * s));
     const rawDamage = (14 + centerFactor * 6) * combatRatio;
     return { hitZone: 'tracks', damage: Math.round(Math.max(10, Math.min(40, rawDamage))) };
   }
@@ -726,10 +872,10 @@ export function evaluatePointCollision(
   for (const crate of arena.crates) {
     if (crate.collected) continue;
     if (
-      Math.abs(px - crate.x) <= 1.35 &&
-      py >= crate.y - 0.2 &&
-      py <= crate.y + 1.8 &&
-      Math.abs(pz - crate.z) <= 1.6
+      Math.abs(px - crate.x) <= 1.5 &&
+      py >= crate.y - 0.25 &&
+      py <= crate.y + 1.9 &&
+      Math.abs(pz - crate.z) <= 1.65
     ) {
       return {
         hitType: 'crate',
@@ -772,7 +918,7 @@ export function evaluatePointCollision(
       return {
         hitType: 'obstacle',
         obstacleId: obs.id,
-        damage: Math.round(45 * shooter.shell.damageMultiplier * shooter.model.damageMultiplier),
+        damage: Math.round(48 * shooter.shell.damageMultiplier * shooter.model.damageMultiplier),
         craterRadius: shooter.shell.blastRadius * 0.9,
         craterDepth: shooter.shell.craterDepth * 0.6,
         impactPoint: { x: px, y: py, z: pz },
@@ -787,9 +933,9 @@ export function evaluatePointCollision(
       if (tank.hp <= 0) continue;
       if (tank.id === shooterId && elapsedTime < 0.25) continue;
       const distToTank = Math.hypot(px - tank.x, pz - tank.z);
-      if (distToTank <= shooter.shell.blastRadius + 1.1) {
-        const splashFactor = Math.max(0.35, 1 - distToTank / (shooter.shell.blastRadius + 1.4));
-        const splashDmg = Math.round(16 * splashFactor * shooter.shell.damageMultiplier);
+      if (distToTank <= shooter.shell.blastRadius + 1.25) {
+        const splashFactor = Math.max(0.35, 1 - distToTank / (shooter.shell.blastRadius + 1.55));
+        const splashDmg = Math.round(18 * splashFactor * shooter.shell.damageMultiplier);
         return {
           hitType: 'tank',
           targetTankId: tank.id,
@@ -817,7 +963,7 @@ export function evaluatePointCollision(
 }
 
 /**
- * Simulates an entire shell flight for AI trajectory planning.
+ * Simulates an entire shell flight for AI trajectory planning in 3D space.
  */
 export function simulateFullShot(
   shooter: TankCombatState,
@@ -831,15 +977,15 @@ export function simulateFullShot(
   const origin = getTankMuzzleOrigin(testShooter);
   const speed = powerToMuzzleVelocity(powerPct, testShooter.shell.muzzleVelocityMultiplier);
   const angleRad = (barrelAngleDeg * Math.PI) / 180;
-  const dir = testShooter.facing;
+  const worldYaw = getTankWorldAimYaw(testShooter);
 
   let current: TrajectoryPoint = {
     x: origin.x,
     y: origin.y,
     z: origin.z,
-    vx: dir * speed * Math.cos(angleRad) * Math.cos(testShooter.turretYawRad),
+    vx: speed * Math.cos(angleRad) * Math.cos(worldYaw),
     vy: speed * Math.sin(angleRad),
-    vz: speed * Math.cos(angleRad) * Math.sin(testShooter.turretYawRad),
+    vz: speed * Math.cos(angleRad) * Math.sin(worldYaw),
     t: 0,
   };
 
@@ -868,7 +1014,7 @@ export function simulateFullShot(
     path.push(next);
     current = next;
 
-    if (Math.abs(current.x) > arena.distance * 1.4 || current.y < -30) {
+    if (Math.hypot(current.x, current.z) > OPEN_WORLD_RADIUS * 1.45 || current.y < -35) {
       return {
         path,
         result: {
@@ -896,6 +1042,82 @@ export function selectEnemyTankForStage(playerTankIndex: number, stageNumber: nu
   return TANK_CATALOG[targetIndex];
 }
 
+/**
+ * Steps continuous 360-degree Open-World tank driving physics (forward/reverse throttle + hull steering + obstacle avoidance).
+ */
+export function stepTankOpenWorldDrive(
+  tank: TankCombatState,
+  otherTank: TankCombatState,
+  arena: BattlefieldConfig,
+  throttleInput: number, // -1 (reverse) to +1 (forward)
+  steerInput: number, // -1 (turn right) to +1 (turn left)
+  dt: number
+): TankCombatState {
+  if (tank.hp <= 0) return tank;
+
+  const baseHullYaw =
+    typeof tank.hullYaw === 'number' ? tank.hullYaw : tank.facing === 1 ? 0 : Math.PI;
+  const mobilityFactor = tank.tracksDamaged ? 0.55 : 1.0;
+  const turnSpeed = 1.45 * mobilityFactor;
+  const maxDriveSpeed = (tank.model.moveFuelMax || 9.0) * 1.15 * mobilityFactor;
+
+  let nextHullYaw = baseHullYaw + steerInput * turnSpeed * dt;
+  // Normalize angle to [-PI, PI]
+  nextHullYaw = Math.atan2(Math.sin(nextHullYaw), Math.cos(nextHullYaw));
+
+  const forwardSpeed = throttleInput * maxDriveSpeed;
+  let nextX = tank.x + Math.cos(nextHullYaw) * forwardSpeed * dt;
+  let nextZ = tank.z + Math.sin(nextHullYaw) * forwardSpeed * dt;
+
+  // Keep inside navigable Open-World perimeter (radius <= 98m)
+  const distFromCenter = Math.hypot(nextX, nextZ);
+  if (distFromCenter > 96) {
+    const scaleBack = 96 / distFromCenter;
+    nextX *= scaleBack;
+    nextZ *= scaleBack;
+  }
+
+  // Push out of destructible obstacles so tanks drive around buildings/rocks realistically
+  for (const obs of arena.obstacles) {
+    if (obs.destroyed) continue;
+    const minClearance = Math.max(obs.width, obs.depth) * 0.5 + 2.35;
+    const dx = nextX - obs.x;
+    const dz = nextZ - obs.z;
+    const d = Math.hypot(dx, dz);
+    if (d < minClearance && d > 0.001) {
+      nextX = obs.x + (dx / d) * minClearance;
+      nextZ = obs.z + (dz / d) * minClearance;
+    }
+  }
+
+  // Prevent overlapping the other tank
+  const dxTank = nextX - otherTank.x;
+  const dzTank = nextZ - otherTank.z;
+  const dTank = Math.hypot(dxTank, dzTank);
+  if (dTank < 5.2 && dTank > 0.001) {
+    nextX = otherTank.x + (dxTank / dTank) * 5.2;
+    nextZ = otherTank.z + (dzTank / dTank) * 5.2;
+  }
+
+  const nextY = terrainHeightAt(nextX, arena, nextZ);
+  const nextSlope = terrainSlopeAt(nextX, arena, nextZ, nextHullYaw);
+  const nextRoll = terrainRollAt(nextX, arena, nextZ, nextHullYaw);
+
+  return {
+    ...tank,
+    x: nextX,
+    y: nextY,
+    z: nextZ,
+    hullYaw: nextHullYaw,
+    slopeAngle: nextSlope,
+    rollAngle: nextRoll,
+    moveFuel: tank.maxMoveFuel, // Open-world unlimited fuel
+  };
+}
+
+/**
+ * Computes AI Tank tactical movement & 3D ballistic solution in the Open World.
+ */
 export function computeAITankTurn(
   aiTank: TankCombatState,
   playerTank: TankCombatState,
@@ -912,30 +1134,39 @@ export function computeAITankTurn(
 } {
   const rng = seededRandom(seed);
 
-  const maxStep = Math.min(aiTank.moveFuel, 2.8);
-  const moveDeltaX = Number(((rng() - 0.5) * 2 * maxStep * 0.75).toFixed(2));
-  const moveDeltaZ = Number(((rng() - 0.5) * 2 * Math.min(1.6, maxStep * 0.45)).toFixed(2));
+  const maxStep = Math.min(aiTank.moveFuel, 4.5);
+  const moveDeltaX = Number(((rng() - 0.5) * 2 * maxStep * 0.85).toFixed(2));
+  const moveDeltaZ = Number(((rng() - 0.5) * 2 * maxStep * 0.85).toFixed(2));
 
   const movedAi: TankCombatState = {
     ...aiTank,
     x: aiTank.x + moveDeltaX,
-    z: Math.max(-4.5, Math.min(4.5, aiTank.z + moveDeltaZ)),
+    z: Math.max(-75, Math.min(75, aiTank.z + moveDeltaZ)),
   };
   movedAi.y = terrainHeightAt(movedAi.x, arena, movedAi.z);
 
-  const turretYawRad = Math.atan2(playerTank.z - movedAi.z, Math.abs(playerTank.x - movedAi.x));
+  const desiredWorldYaw = Math.atan2(playerTank.z - movedAi.z, playerTank.x - movedAi.x);
+  const turretYawRad =
+    typeof movedAi.hullYaw === 'number'
+      ? Math.atan2(
+          Math.sin(desiredWorldYaw - movedAi.hullYaw),
+          Math.cos(desiredWorldYaw - movedAi.hullYaw)
+        )
+      : Math.atan2(playerTank.z - movedAi.z, Math.abs(playerTank.x - movedAi.x));
+
   movedAi.turretYawRad = turretYawRad;
 
   const targetX = playerTank.x;
   const targetY = playerTank.y + 1.25 * playerTank.model.scale;
+  const targetZ = playerTank.z;
 
-  let bestAngle = 38;
+  let bestAngle = 34;
   let bestPower = 72;
   let bestScore = Infinity;
 
-  const candidateAngles = [22, 26, 30, 34, 38, 42, 46, 50, 55, 60, 65];
+  const candidateAngles = [18, 22, 26, 30, 34, 38, 42, 48, 54, 60];
   for (const ang of candidateAngles) {
-    for (let pwr = 32; pwr <= 98; pwr += 3) {
+    for (let pwr = 30; pwr <= 98; pwr += 4) {
       const sim = simulateFullShot(movedAi, ang, pwr, windSpeed, [playerTank, movedAi], arena);
       if (sim.result.hitType === 'tank' && sim.result.targetTankId === playerTank.id) {
         const zoneBonus =
@@ -948,7 +1179,8 @@ export function computeAITankTurn(
       } else {
         const distErr = Math.hypot(
           sim.result.impactPoint.x - targetX,
-          sim.result.impactPoint.y - targetY
+          sim.result.impactPoint.y - targetY,
+          sim.result.impactPoint.z - targetZ
         );
         const obsPenalty = sim.result.hitType === 'obstacle' ? 18 : 0;
         const totalErr = distErr + obsPenalty;
@@ -961,9 +1193,9 @@ export function computeAITankTurn(
     }
   }
 
-  const accuracyFactor = Math.max(0.18, 1 - (stageNumber - 1) * 0.12);
-  const angleJitter = (rng() * 2 - 1) * 5.5 * accuracyFactor;
-  const powerJitter = (rng() * 2 - 1) * 7.5 * accuracyFactor;
+  const accuracyFactor = Math.max(0.16, 1 - (stageNumber - 1) * 0.12);
+  const angleJitter = (rng() * 2 - 1) * 5.0 * accuracyFactor;
+  const powerJitter = (rng() * 2 - 1) * 7.0 * accuracyFactor;
 
   return {
     moveDeltaX,

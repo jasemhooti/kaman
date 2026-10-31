@@ -10,6 +10,7 @@ import {
   generateBattlefieldConfig,
   selectEnemyTankForStage,
   stepProjectile,
+  stepTankOpenWorldDrive,
   terrainHeightAt,
   type TankCombatState,
 } from './physics.ts';
@@ -95,9 +96,10 @@ test('Battlefield generator creates distinct stage biomes, obstacles, and supply
   const stage2 = generateBattlefieldConfig(101, 2);
 
   assert.notEqual(stage1.biome, stage2.biome);
+  assert.equal(stage1.worldSize, 260);
   assert.ok(stage1.distance >= 54);
-  assert.ok(stage1.obstacles.length >= 3);
-  assert.equal(stage1.crates.length, 2);
+  assert.ok(stage1.obstacles.length >= 10);
+  assert.ok(stage1.crates.length >= 2);
 
   const yLeft = terrainHeightAt(-stage1.distance * 0.5, stage1);
   const yCenter = terrainHeightAt(0, stage1);
@@ -143,4 +145,17 @@ test('Dynamic 3D ground craters physically indent terrain elevation at impact co
     `Expected crater center (${craterCenterElevation}) to be lower than base elevation (${baseElevation})`
   );
 });
+
+test('Open-World 360-degree tank driving updates hull heading and X/Z coordinates across terrain', () => {
+  const arena = generateBattlefieldConfig(707, 1);
+  const p1 = createDummyTank(1, -28, terrainHeightAt(-28, arena, 0));
+  const p2 = createDummyTank(2, 28, terrainHeightAt(28, arena, 0));
+
+  // Steer left and drive forward in Open World
+  const turned = stepTankOpenWorldDrive(p1, p2, arena, 1, 1, 0.5);
+  assert.ok((turned.hullYaw ?? 0) > 0.2, 'Expected hullYaw to rotate when steering');
+  assert.ok(turned.x > p1.x, 'Expected tank to advance along X');
+  assert.ok(turned.z > p1.z, 'Expected tank to advance along Z in 2D open world');
+});
+
 

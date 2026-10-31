@@ -176,6 +176,33 @@ class TankSoundEngine {
   }
 
   /**
+   * Fires cannon blast scaled by shell damage multiplier.
+   */
+  public playCannonFire(damageMultiplier = 1.0): void {
+    this.playCannonBlast(damageMultiplier >= 1.45 ? 2 : 1);
+  }
+
+  /**
+   * Unified explosion sound dispatcher for armor hits, turret crits, obstacles, and ground craters.
+   */
+  public playExplosion(
+    kind: 'turret_crit' | 'armor' | 'obstacle' | 'ground',
+    isFatal = false
+  ): void {
+    if (isFatal) {
+      this.playTankExplosion();
+      return;
+    }
+    if (kind === 'turret_crit') {
+      this.playImpactArmor(true);
+    } else if (kind === 'armor' || kind === 'obstacle') {
+      this.playImpactArmor(false);
+    } else {
+      this.playImpactGround();
+    }
+  }
+
+  /**
    * Starts continuous artillery shell whistle during flight.
    */
   public startShellWhistle(): void {

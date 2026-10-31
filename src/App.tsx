@@ -9,9 +9,11 @@ import {
   TANK_CATALOG,
   computeAITankTurn,
   generateBattlefieldConfig,
-   generateTurnWind,
+  generateTurnWind,
   selectEnemyTankForStage,
+  stepTankOpenWorldDrive,
   terrainHeightAt,
+  terrainRollAt,
   terrainSlopeAt,
   type BattlefieldConfig,
   type CameraPreset,
@@ -83,9 +85,11 @@ function createStageTanks(
 ): [TankCombatState, TankCombatState] {
   const halfDist = arena.distance * 0.5;
   const x1 = -halfDist;
+  const z1 = 0;
   const x2 = halfDist;
-  const y1 = terrainHeightAt(x1, arena);
-  const y2 = terrainHeightAt(x2, arena);
+  const z2 = 0;
+  const y1 = terrainHeightAt(x1, arena, z1);
+  const y2 = terrainHeightAt(x2, arena, z2);
 
   const enemyModel = selectEnemyTankForStage(playerModel.index, stageNumber);
   const enemyShellIndex = Math.min(
@@ -94,7 +98,7 @@ function createStageTanks(
   );
   const enemyShell = SHELL_CATALOG[enemyShellIndex];
 
-  // Both tanks start with equal HP in each stage as requested
+  // Both tanks start with equal HP in each stage
   const stageEqualHp = Math.round(100 + (stageNumber - 1) * 15);
 
   return [
@@ -105,11 +109,13 @@ function createStageTanks(
       shell: playerShell,
       x: x1,
       y: y1,
-      z: 0,
-      slopeAngle: terrainSlopeAt(x1, arena),
+      z: z1,
+      hullYaw: 0,
+      slopeAngle: terrainSlopeAt(x1, arena, z1, 0),
+      rollAngle: terrainRollAt(x1, arena, z1, 0),
       facing: 1,
       turretYawRad: 0,
-      barrelAngleDeg: 36,
+      barrelAngleDeg: 32,
       powerPct: 72,
       hp: stageEqualHp,
       maxHp: stageEqualHp,
@@ -128,11 +134,13 @@ function createStageTanks(
       shell: enemyShell,
       x: x2,
       y: y2,
-      z: 0,
-      slopeAngle: terrainSlopeAt(x2, arena),
+      z: z2,
+      hullYaw: Math.PI,
+      slopeAngle: terrainSlopeAt(x2, arena, z2, Math.PI),
+      rollAngle: terrainRollAt(x2, arena, z2, Math.PI),
       facing: -1,
       turretYawRad: 0,
-      barrelAngleDeg: 38,
+      barrelAngleDeg: 34,
       powerPct: 72,
       hp: stageEqualHp,
       maxHp: stageEqualHp,
@@ -185,6 +193,10 @@ export default function App() {
   );
   const [isShotInFlight, setIsShotInFlight] = useState<boolean>(false);
   const [shotTrigger, setShotTrigger] = useState<ActiveShotTrigger | null>(null);
+  const [driveInput, setDriveInput] = useState<{ throttle: number; steer: number }>({
+    throttle: 0,
+    steer: 0,
+  });
 
   const [lastImpactBanner, setLastImpactBanner] = useState<{
     text: string;
@@ -199,8 +211,8 @@ export default function App() {
   const shotCounterRef = useRef<number>(1);
   const aiTimerRef = useRef<number | null>(null);
   const bannerTimerRef = useRef<number | null>(null);
+  const lastSoundStepRef = useRef<number>(0);
 
-  // Persist coins, stage, and unlocked tanks/shells to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
@@ -209,7 +221,6 @@ export default function App() {
     }
   }, [progress]);
 
-  // Sync document.body.dataset.state for automated testing
   useEffect(() => {
     document.body.dataset.state = appState;
   }, [appState]);
@@ -225,7 +236,6 @@ export default function App() {
     []
   );
 
-  // Update 3D preview tank when browsing Garage or Shell Shop
   const previewTankInGarage = useCallback(
     (tankSpec: TankModelSpec, shellSpec: ShellSpec) => {
       setTanks((prev) => [
@@ -241,7 +251,6 @@ export default function App() {
     []
   );
 
-  // Start or Launch Battle for a given Stage Number
   const startBattleStage = useCallback(
     (targetStage: number, customTank?: TankModelSpec, customShell?: ShellSpec) => {
       if (aiTimerRef.current) {
@@ -264,20 +273,20 @@ export default function App() {
       setWindSpeed(nextWind);
       setIsShotInFlight(false);
       setShotTrigger(null);
+      setDriveInput({ throttle: 0, steer: 0 });
       setMatchOutcome(null);
       setAppState('playing');
 
       showBanner(
         `مرحله ${targetStage} · ${nextArena.biomeTitle}`,
-        `${activeTankModel.name} در برابر ${nextTanks[1].model.name}`,
+        `حرکت آزاد ۳۶۰ درجه در جهان‌آزاد · تانک دشمن را منهدم کنید!`,
         'hit',
-        2200
+        2600
       );
     },
     [selectedTank, selectedShell, showBanner]
   );
 
-  // Select or Purchase a Tank in the Garage
   const handleSelectOrBuyTank = (tank: TankModelSpec) => {
     const isUnlocked = progress.unlockedTankIds.includes(tank.id);
     if (isUnlocked) {
@@ -299,7 +308,6 @@ export default function App() {
     }
   };
 
-  // Select or Purchase a Shell in the Shell Shop (Unlimited Ammo once unlocked!)
   const handleSelectOrBuyShell = (shell: ShellSpec) => {
     const isUnlocked = progress.unlockedShellIds.includes(shell.id);
     if (isUnlocked) {
@@ -325,48 +333,53 @@ export default function App() {
     }
   };
 
-  // Move Player Tank slightly Forward, Backward, Left, or Right during their turn
-  const handleMoveTank = useCallback(
-    (dx: number, dz: number) => {
-      if (appState !== 'playing' || isShotInFlight || currentTurn !== 1) return;
+  // Continuous 360-Degree Open-World Driving + Supply Crate Collection
+  const applyOpenWorldDrive = useCallback(
+    (throttle: number, steer: number, dt: number) => {
+      if (appState !== 'playing') return;
 
-      const stepCost = Math.hypot(dx, dz);
+      const now = performance.now();
+      if (now - lastSoundStepRef.current > 240) {
+        lastSoundStepRef.current = now;
+        soundEngine.playTrackMove();
+      }
+
       setTanks((prev) => {
-        const p1 = { ...prev[0] };
-        if (p1.moveFuel < 0.1) return prev;
+        const updatedP1 = stepTankOpenWorldDrive(
+          prev[0],
+          prev[1],
+          arena,
+          throttle,
+          steer,
+          dt
+        );
 
-        const halfDist = arena.distance * 0.5;
-        const minX = -halfDist - 8.5;
-        const maxX = -6.0; // Keep player tank on their side of the valley
-        const nextX = Math.max(minX, Math.min(maxX, p1.x + dx));
-        const nextZ = Math.max(-4.8, Math.min(4.8, p1.z + dz));
-        const nextY = terrainHeightAt(nextX, arena, nextZ);
-
-        p1.x = nextX;
-        p1.y = nextY;
-        p1.z = nextZ;
-        p1.slopeAngle = terrainSlopeAt(nextX, arena, nextZ);
-        p1.moveFuel = Math.max(0, p1.moveFuel - stepCost);
-
-        // Automatically orient turret yaw toward enemy tank Z
-        p1.turretYawRad = Math.atan2(prev[1].z - nextZ, Math.abs(prev[1].x - nextX));
-
-        // Check if driving over a Supply Crate!
+        // Check if driving over any Open-World Supply Crate
         setArena((prevArena) => {
           let pickedUp = false;
           const nextCrates = prevArena.crates.map((crate) => {
             if (crate.collected) return crate;
-            if (Math.hypot(nextX - crate.x, nextZ - crate.z) <= 2.3) {
+            if (Math.hypot(updatedP1.x - crate.x, updatedP1.z - crate.z) <= 2.65) {
               pickedUp = true;
               soundEngine.playCratePickup();
               if (crate.kind === 'heal') {
-                const healAmt = Math.round(p1.maxHp * 0.25);
-                p1.hp = Math.min(p1.maxHp, p1.hp + healAmt);
-                setTrailingHp([p1.hp, prev[1].hp]);
-                showBanner('جعبه تعمیر دریافت شد!', `+${healAmt} جان به تانک شما اضافه شد`, 'hit', 2000);
+                const healAmt = Math.round(updatedP1.maxHp * 0.25);
+                updatedP1.hp = Math.min(updatedP1.maxHp, updatedP1.hp + healAmt);
+                setTrailingHp([updatedP1.hp, prev[1].hp]);
+                showBanner(
+                  'جعبه تعمیر دریافت شد!',
+                  `+${healAmt} جان به تانک شما اضافه شد`,
+                  'hit',
+                  2000
+                );
               } else {
                 setProgress((pr) => ({ ...pr, coins: pr.coins + crate.value }));
-                showBanner('جعبه سکه طلایی دریافت شد!', `+${crate.value} سکه به حساب شما اضافه شد`, 'crit', 2000);
+                showBanner(
+                  'جعبه سکه طلایی دریافت شد!',
+                  `+${crate.value} سکه به حساب شما اضافه شد`,
+                  'crit',
+                  2000
+                );
               }
               return { ...crate, collected: true };
             }
@@ -375,47 +388,53 @@ export default function App() {
           return pickedUp ? { ...prevArena, crates: nextCrates } : prevArena;
         });
 
-        return [p1, prev[1]];
+        return [updatedP1, prev[1]];
       });
-
-      soundEngine.playTrackMove();
     },
-    [appState, isShotInFlight, currentTurn, arena, showBanner]
+    [appState, arena, showBanner]
   );
 
-  // Update active tank's barrel angle & power when dragging on the 3D scene
+  // Single-Tap Driving Step for Click/Tap Convenience
+  const handleMoveTankStep = useCallback(
+    (throttleStep: number, steerStep: number) => {
+      applyOpenWorldDrive(throttleStep, steerStep, 0.22);
+    },
+    [applyOpenWorldDrive]
+  );
+
+  // Update active tank's 360-degree turret yaw, barrel elevation & power when dragging on the 3D scene
   const handleAimChange = useCallback(
-    (barrelAngleDeg: number, powerPct: number) => {
-      if (appState !== 'playing' || isShotInFlight || currentTurn !== 1) return;
+    (barrelAngleDeg: number, powerPct: number, deltaTurretYawRad = 0) => {
+      if (appState !== 'playing') return;
       setTanks((prev) => {
         const p1 = { ...prev[0] };
         p1.barrelAngleDeg = Math.max(5, Math.min(75, barrelAngleDeg));
         p1.powerPct = Math.max(20, Math.min(100, powerPct));
+        if (Math.abs(deltaTurretYawRad) > 0.0001) {
+          const nextYaw = p1.turretYawRad + deltaTurretYawRad;
+          p1.turretYawRad = Math.atan2(Math.sin(nextYaw), Math.cos(nextYaw));
+        }
         return [p1, prev[1]];
       });
     },
-    [appState, isShotInFlight, currentTurn]
+    [appState]
   );
 
-  // Switch active shell during battle
   const handleSelectShellInBattle = useCallback(
     (shell: ShellSpec) => {
-      if (appState !== 'playing' || isShotInFlight || currentTurn !== 1) return;
+      if (appState !== 'playing') return;
       soundEngine.playTurretServo(85);
       setProgress((prev) => ({ ...prev, selectedShellId: shell.id }));
       setTanks((prev) => [{ ...prev[0], shell }, prev[1]]);
     },
-    [appState, isShotInFlight, currentTurn]
+    [appState]
   );
 
-  // Fire Tank Cannon
+  // Fire Player Tank Cannon in 360-Degree Open World
   const handleFire = useCallback(() => {
-    if (appState !== 'playing' || isShotInFlight || currentTurn !== 1) return;
+    if (appState !== 'playing' || isShotInFlight) return;
 
     const p1 = tanks[0];
-    const p2 = tanks[1];
-    const yawRad = Math.atan2(p2.z - p1.z, Math.abs(p2.x - p1.x));
-
     shotCounterRef.current += 1;
     setIsShotInFlight(true);
     setLastImpactBanner(null);
@@ -424,14 +443,42 @@ export default function App() {
       shooterId: 1,
       barrelAngleDeg: p1.barrelAngleDeg,
       powerPct: p1.powerPct,
-      turretYawRad: yawRad,
+      turretYawRad: p1.turretYawRad,
     });
-  }, [appState, isShotInFlight, currentTurn, tanks]);
+  }, [appState, isShotInFlight, tanks]);
 
-  // Resolve Shell Impact & Advance Turn or Complete Stage
+  // Global keyboard shortcuts (Space to Fire, Escape/P to Pause, C to Cycle Camera)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (appState === 'garage' && (e.code === 'Enter' || e.code === 'Space')) {
+        e.preventDefault();
+        startBattleStage(progress.stageNumber);
+        return;
+      }
+      if (appState === 'playing') {
+        if (e.code === 'Space' && !isShotInFlight) {
+          e.preventDefault();
+          handleFire();
+        } else if (e.code === 'Escape' || e.code === 'KeyP') {
+          setAppState('paused');
+        } else if (e.code === 'KeyC') {
+          setCameraPreset((prev) => {
+            const idx = CAMERA_PRESET_ORDER.indexOf(prev);
+            return CAMERA_PRESET_ORDER[(idx + 1) % CAMERA_PRESET_ORDER.length];
+          });
+        }
+      } else if (appState === 'paused' && (e.code === 'Escape' || e.code === 'KeyP')) {
+        setAppState('playing');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [appState, isShotInFlight, handleFire, startBattleStage, progress.stageNumber]);
+
+  // Resolve Shell Impact & Advance Open-World Combat
   const handleShotResolved = useCallback(
     (result: HitDetectionResult, landingX: number) => {
-      const shooterIdx = currentTurn - 1;
+      const shooterIdx = shotTrigger ? shotTrigger.shooterId - 1 : currentTurn - 1;
       const nextTanks: [TankCombatState, TankCombatState] = [
         { ...tanks[0] },
         { ...tanks[1] },
@@ -479,7 +526,7 @@ export default function App() {
         const dmg = result.damage ?? 28;
         nextTanks[targetIdx].hp = Math.max(0, nextTanks[targetIdx].hp - dmg);
 
-        if (result.targetTankId !== currentTurn) {
+        if (result.targetTankId !== shooterIdx + 1) {
           nextTanks[shooterIdx].hitsLanded += 1;
           if (result.hitZone === 'turret') {
             nextTanks[shooterIdx].critHits += 1;
@@ -499,9 +546,7 @@ export default function App() {
 
         showBanner(
           zoneTitle,
-          `-${dmg} جان از ${nextTanks[targetIdx].name}${
-            result.hitZone === 'tracks' ? ' · کاهش ۵۰٪ حرکت در نوبت بعد' : ''
-          }`,
+          `-${dmg} جان از ${nextTanks[targetIdx].name}`,
           result.hitZone === 'turret' ? 'crit' : 'hit',
           2500
         );
@@ -514,7 +559,7 @@ export default function App() {
           destroyedTankId = result.targetTankId;
         }
       } else if (result.hitType === 'obstacle' && result.obstacleId) {
-        const dmg = result.damage ?? 45;
+        const dmg = result.damage ?? 48;
         setArena((prevArena) => {
           const updatedObs = prevArena.obstacles.map((obs) => {
             if (obs.id !== result.obstacleId) return obs;
@@ -523,16 +568,19 @@ export default function App() {
           });
           const hitObs = updatedObs.find((o) => o.id === result.obstacleId);
           showBanner(
-            hitObs?.destroyed ? 'انهدام کامل مانع میدان!' : 'برخورد گلوله با مانع زرهی',
-            hitObs?.destroyed ? 'مسیر آتش اکنون باز شد!' : `استحکام باقی‌مانده مانع: ${hitObs?.hp}`,
+            hitObs?.destroyed ? 'انهدام کامل سازه نظامی!' : 'اصابت گلوله به سازه میدان',
+            hitObs?.destroyed ? 'سازه منهدم شد و مسیر باز گردید!' : `استحکام باقی‌مانده: ${hitObs?.hp}`,
             'miss',
             2000
           );
           return { ...prevArena, obstacles: updatedObs };
         });
       } else {
-        const targetIdx = currentTurn === 1 ? 1 : 0;
-        const missDist = Math.abs(landingX - nextTanks[targetIdx].x);
+        const targetIdx = shooterIdx === 0 ? 1 : 0;
+        const missDist = Math.hypot(
+          result.impactPoint.x - nextTanks[targetIdx].x,
+          result.impactPoint.z - nextTanks[targetIdx].z
+        );
         showBanner(
           'اصابت به زمین و ایجاد گودال انفجار',
           `فاصله تا تانک هدف: ${missDist.toFixed(1)} متر`,
@@ -545,8 +593,8 @@ export default function App() {
       if (result.craterRadius && result.craterDepth) {
         const newCrater = {
           id: `crater-${Date.now()}-${shotCounterRef.current}`,
-          x: result.hitPoint.x,
-          z: result.hitPoint.z,
+          x: result.impactPoint.x,
+          z: result.impactPoint.z,
           radius: result.craterRadius,
           depth: result.craterDepth,
         };
@@ -555,8 +603,20 @@ export default function App() {
           craters: [...arena.craters, newCrater],
         };
         for (let i = 0; i < 2; i++) {
+          const yaw = nextTanks[i].hullYaw ?? (nextTanks[i].facing === 1 ? 0 : Math.PI);
           nextTanks[i].y = terrainHeightAt(nextTanks[i].x, arenaWithCrater, nextTanks[i].z);
-          nextTanks[i].slopeAngle = terrainSlopeAt(nextTanks[i].x, arenaWithCrater, nextTanks[i].z);
+          nextTanks[i].slopeAngle = terrainSlopeAt(
+            nextTanks[i].x,
+            arenaWithCrater,
+            nextTanks[i].z,
+            yaw
+          );
+          nextTanks[i].rollAngle = terrainRollAt(
+            nextTanks[i].x,
+            arenaWithCrater,
+            nextTanks[i].z,
+            yaw
+          );
         }
         setArena((prevArena) => ({
           ...prevArena,
@@ -592,21 +652,12 @@ export default function App() {
         return;
       }
 
-      // Prepare Next Turn & Replenish Fuel (50% if tracks were damaged!)
-      const nextTurn: 1 | 2 = currentTurn === 1 ? 2 : 1;
-      const nextIdx = nextTurn - 1;
-      const maxFuel = nextTanks[nextIdx].model.moveFuelMax;
-      nextTanks[nextIdx].moveFuel = nextTanks[nextIdx].tracksDamaged ? maxFuel * 0.5 : maxFuel;
-      nextTanks[nextIdx].maxMoveFuel = maxFuel;
-      // Clear track penalty after applying it for one turn
-      if (currentTurn === nextTurn) {
-        nextTanks[nextIdx].tracksDamaged = false;
-      } else {
-        nextTanks[shooterIdx].tracksDamaged = false;
-      }
-
+      const nextTurn: 1 | 2 = shooterIdx === 0 ? 2 : 1;
       const nextTurnNumber = nextTurn === 1 ? turnCount + 1 : turnCount;
-      const nextWind = generateTurnWind(arena.biome, arena.seed + nextTurnNumber * 137 + nextTurn * 41);
+      const nextWind = generateTurnWind(
+        arena.biome,
+        arena.seed + nextTurnNumber * 137 + nextTurn * 41
+      );
 
       setTanks(nextTanks);
       setCurrentTurn(nextTurn);
@@ -614,10 +665,10 @@ export default function App() {
       setWindSpeed(nextWind);
       setIsShotInFlight(false);
     },
-    [currentTurn, tanks, progress.stageNumber, turnCount, arena, showBanner]
+    [shotTrigger, currentTurn, tanks, progress.stageNumber, turnCount, arena, showBanner]
   );
 
-  // Execute Enemy AI Tank Turn (Movement + Aiming + Firing)
+  // Autonomous Open-World Enemy Tank Patrol & Counter-Fire
   useEffect(() => {
     if (appState !== 'playing' || currentTurn !== 2 || isShotInFlight) {
       return;
@@ -634,42 +685,64 @@ export default function App() {
       arena.seed + turnCount * 73
     );
 
-    // Step 1: AI drives slightly forward/backward and sideways to dodge
+    // Step 1: Enemy Tank drives through the 3D Open World (flanking & orienting hull)
     const moveTimer = window.setTimeout(() => {
       soundEngine.playTrackMove();
       setTanks((prev) => {
-        const halfDist = arena.distance * 0.5;
-        const nextX = Math.max(6.0, Math.min(halfDist + 8.5, prev[1].x + decision.moveDeltaX));
-        const nextZ = Math.max(-4.5, Math.min(4.5, prev[1].z + decision.moveDeltaZ));
+        const curAi = prev[1];
+        const nextX = Math.max(-88, Math.min(88, curAi.x + decision.moveDeltaX * 1.6));
+        const nextZ = Math.max(-88, Math.min(88, curAi.z + decision.moveDeltaZ * 1.8));
+        const moveHeading =
+          Math.hypot(nextX - curAi.x, nextZ - curAi.z) > 0.25
+            ? Math.atan2(nextZ - curAi.z, nextX - curAi.x)
+            : curAi.hullYaw ?? Math.PI;
+        const desiredWorldYaw = Math.atan2(prev[0].z - nextZ, prev[0].x - nextX);
+        const relTurretYaw = Math.atan2(
+          Math.sin(desiredWorldYaw - moveHeading),
+          Math.cos(desiredWorldYaw - moveHeading)
+        );
         const nextY = terrainHeightAt(nextX, arena, nextZ);
+
         return [
           prev[0],
           {
-            ...prev[1],
+            ...curAi,
             x: nextX,
             y: nextY,
             z: nextZ,
-            slopeAngle: terrainSlopeAt(nextX, arena, nextZ),
+            hullYaw: moveHeading,
+            slopeAngle: terrainSlopeAt(nextX, arena, nextZ, moveHeading),
+            rollAngle: terrainRollAt(nextX, arena, nextZ, moveHeading),
             barrelAngleDeg: decision.barrelAngleDeg,
             powerPct: decision.powerPct,
-            turretYawRad: decision.turretYawRad,
+            turretYawRad: relTurretYaw,
           },
         ];
       });
-    }, 450);
+    }, 380);
 
-    // Step 2: AI fires cannon
+    // Step 2: Enemy Tank fires cannon across the Open World
     aiTimerRef.current = window.setTimeout(() => {
       shotCounterRef.current += 1;
       setIsShotInFlight(true);
-      setShotTrigger({
-        shotId: shotCounterRef.current,
-        shooterId: 2,
-        barrelAngleDeg: decision.barrelAngleDeg,
-        powerPct: decision.powerPct,
-        turretYawRad: decision.turretYawRad,
+      setTanks((prev) => {
+        const curAi = prev[1];
+        const desiredWorldYaw = Math.atan2(prev[0].z - curAi.z, prev[0].x - curAi.x);
+        const aiHullYaw = curAi.hullYaw ?? Math.PI;
+        const relTurretYaw = Math.atan2(
+          Math.sin(desiredWorldYaw - aiHullYaw),
+          Math.cos(desiredWorldYaw - aiHullYaw)
+        );
+        setShotTrigger({
+          shotId: shotCounterRef.current,
+          shooterId: 2,
+          barrelAngleDeg: decision.barrelAngleDeg,
+          powerPct: decision.powerPct,
+          turretYawRad: relTurretYaw,
+        });
+        return prev;
       });
-    }, 1050);
+    }, 950);
 
     return () => {
       window.clearTimeout(moveTimer);
@@ -684,7 +757,7 @@ export default function App() {
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-[#0c1017] select-none">
-      {/* 100% Full-Viewport 3D Tank Battlefield & Garage Showcase Canvas */}
+      {/* 100% Full-Viewport 3D Open-World Tank Battlefield & Garage Showcase Canvas */}
       <ArenaCanvas
         appState={appState}
         arena={arena}
@@ -694,7 +767,9 @@ export default function App() {
         cameraPreset={cameraPreset}
         isAITurn={isAITurn}
         shotTrigger={shotTrigger}
+        driveInput={driveInput}
         onAimChange={handleAimChange}
+        onContinuousDrive={applyOpenWorldDrive}
         onShotResolved={handleShotResolved}
       />
 
@@ -704,10 +779,10 @@ export default function App() {
           className="fixed inset-0 z-20 flex flex-col justify-between p-3 sm:p-6 pointer-events-none"
           style={{
             background:
-              'linear-gradient(180deg, rgba(8,11,18,0.82) 0%, rgba(8,11,18,0.18) 38%, rgba(8,11,18,0.92) 100%)',
+              'linear-gradient(180deg, rgba(8,11,18,0.78) 0%, rgba(8,11,18,0.12) 38%, rgba(8,11,18,0.90) 100%)',
           }}
         >
-          {/* Top Header: Game Title, Stage Badge, Coin Balance & Shell Shop Button */}
+          {/* Top Header: Game Title, Stage Info, Coin Balance & Shell Shop Button */}
           <div className="w-full max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2 pointer-events-auto">
             <div className="flex items-center gap-3">
               <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-2xl shadow-lg">
@@ -724,7 +799,7 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="rounded-xl border border-amber-500/40 bg-[#0c1017]/90 px-3.5 py-2 flex items-center gap-1.5 font-mono-num text-sm sm:text-base font-extrabold text-amber-400 shadow">
+              <div className="rounded-xl border border-amber-500/40 bg-[#0c1017]/90 px-3.5 py-2 flex items-center gap-1.5 font-mono-num text-sm sm:text-base font-extrabold text-amber-400 shadow tabular-nums">
                 <span>🪙</span>
                 <span>{progress.coins}</span>
                 <span className="text-xs font-normal text-slate-300 mr-1" dir="rtl">
@@ -735,7 +810,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setAppState('shop')}
-                className="rounded-xl border border-sky-400/50 bg-sky-500/20 px-3.5 py-2 text-xs sm:text-sm font-extrabold text-sky-300 hover:bg-sky-500/30 transition-colors whitespace-nowrap"
+                className="rounded-xl border border-sky-400/50 bg-sky-500/20 px-3.5 py-2 text-xs sm:text-sm font-extrabold text-sky-300 hover:bg-sky-500/30 transition-colors whitespace-nowrap shrink-0"
               >
                 🚀 فروشگاه گلوله تانک
               </button>
@@ -744,19 +819,18 @@ export default function App() {
 
           {/* Bottom Garage Panel: 10 Tank Selector Carousel + Go To Battle Button */}
           <div className="w-full max-w-6xl mx-auto pointer-events-auto space-y-3">
-            {/* Selected Tank Specs Banner */}
             <div className="rounded-2xl border border-white/15 bg-[#0c1017]/90 p-3 sm:p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xl">
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-base sm:text-xl font-extrabold text-white">
                     {selectedTank.name}
                   </span>
-                  <span className="rounded-md bg-amber-500/20 border border-amber-400/40 px-2 py-0.5 text-[10px] font-mono-num font-bold text-amber-300">
-                    {selectedTank.codeName}
+                  <span className="text-xs font-mono-num font-bold text-amber-300">
+                    · {selectedTank.codeName}
                   </span>
                   {selectedTank.barrelCount === 2 && (
-                    <span className="rounded-md bg-rose-500/20 border border-rose-400/40 px-2 py-0.5 text-[10px] font-bold text-rose-300">
-                      دو لول هم‌زمان
+                    <span className="text-xs font-bold text-rose-300">
+                      · دو لول هم‌زمان
                     </span>
                   )}
                 </div>
@@ -764,23 +838,33 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
-                <div className="text-xs text-slate-300 space-y-0.5 font-mono-num">
-                  <div>قدرت توپ: <strong className="text-amber-400">{Math.round(selectedTank.damageMultiplier * 100)}%</strong></div>
-                  <div>زره بدنه: <strong className="text-emerald-400">{Math.round(selectedTank.armorMultiplier * 100)}%</strong></div>
+                <div className="text-xs text-slate-300 space-y-0.5 font-mono-num tabular-nums">
+                  <div>
+                    قدرت توپ:{' '}
+                    <strong className="text-amber-400">
+                      {Math.round(selectedTank.damageMultiplier * 100)}%
+                    </strong>
+                  </div>
+                  <div>
+                    زره بدنه:{' '}
+                    <strong className="text-emerald-400">
+                      {Math.round(selectedTank.armorMultiplier * 100)}%
+                    </strong>
+                  </div>
                 </div>
 
                 <button
                   type="button"
                   data-start="true"
                   onClick={() => startBattleStage(progress.stageNumber)}
-                  className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-3.5 text-sm sm:text-base font-extrabold text-slate-950 shadow-xl hover:from-amber-400 hover:to-orange-400 active:scale-[0.99] transition-all whitespace-nowrap"
+                  className="rounded-xl bg-amber-500 px-6 py-3.5 text-sm sm:text-base font-extrabold text-slate-950 shadow-xl hover:bg-amber-400 active:scale-[0.99] transition-all whitespace-nowrap shrink-0"
                 >
-                  ⚔️ برو به بازی (مرحله {progress.stageNumber})
+                  ⚔️ برو به بازی جهان‌آزاد (مرحله {progress.stageNumber})
                 </button>
               </div>
             </div>
 
-            {/* 10 Tank Models Horizontal / Grid Selector */}
+            {/* 10 Tank Models Grid Selector */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 max-h-[34vh] overflow-y-auto pr-1">
               {TANK_CATALOG.map((tank) => {
                 const isUnlocked = progress.unlockedTankIds.includes(tank.id);
@@ -812,7 +896,7 @@ export default function App() {
                       />
                     </div>
 
-                    <div className="my-1.5 flex items-center justify-between text-[10px] text-slate-300 font-mono-num">
+                    <div className="my-1.5 flex items-center justify-between text-[10px] text-slate-300 font-mono-num tabular-nums">
                       <span>DMG {Math.round(tank.damageMultiplier * 100)}%</span>
                       <span>{tank.barrelCount === 2 ? '2x لوله' : '1x لوله'}</span>
                     </div>
@@ -828,7 +912,7 @@ export default function App() {
                         </span>
                       ) : (
                         <span
-                          className={`text-[11px] font-extrabold font-mono-num ${
+                          className={`text-[11px] font-extrabold font-mono-num tabular-nums ${
                             canAfford ? 'text-sky-300' : 'text-rose-400'
                           }`}
                         >
@@ -861,13 +945,13 @@ export default function App() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <div className="rounded-xl bg-[#0c1017] border border-amber-500/40 px-3 py-1.5 font-mono-num text-sm font-extrabold text-amber-400">
+                <div className="rounded-xl bg-[#0c1017] border border-amber-500/40 px-3 py-1.5 font-mono-num text-sm font-extrabold text-amber-400 tabular-nums">
                   🪙 {progress.coins}
                 </div>
                 <button
                   type="button"
                   onClick={() => setAppState('garage')}
-                  className="rounded-xl border border-white/15 bg-white/10 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-white/20"
+                  className="rounded-xl border border-white/15 bg-white/10 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-white/20 whitespace-nowrap"
                 >
                   بازگشت به گاراژ
                 </button>
@@ -898,8 +982,8 @@ export default function App() {
                           {shell.name}
                         </span>
                         <span
-                          className="px-2 py-0.5 rounded text-[11px] font-mono-num font-bold text-slate-950"
-                          style={{ backgroundColor: shell.badgeColor }}
+                          className="text-xs font-mono-num font-bold tabular-nums"
+                          style={{ color: shell.badgeColor }}
                         >
                           قدرت {Math.round(shell.damageMultiplier * 100)}%
                         </span>
@@ -907,7 +991,8 @@ export default function App() {
                       <p className="text-xs text-slate-300 mt-1.5">{shell.description}</p>
                       {!isUnlocked && shell.minTankIndex > 0 && (
                         <div className="mt-1.5 text-[11px] text-amber-300">
-                          نیازمند حداقل تانک شماره {shell.minTankIndex + 1} ({TANK_CATALOG[shell.minTankIndex].name})
+                          نیازمند حداقل تانک شماره {shell.minTankIndex + 1} (
+                          {TANK_CATALOG[shell.minTankIndex].name})
                         </div>
                       )}
                     </div>
@@ -916,7 +1001,7 @@ export default function App() {
                       type="button"
                       disabled={!isUnlocked && (!tankRequirementMet || !canAfford)}
                       onClick={() => handleSelectOrBuyShell(shell)}
-                      className={`w-full rounded-xl py-2.5 px-4 text-xs sm:text-sm font-extrabold transition-all ${
+                      className={`w-full rounded-xl py-2.5 px-4 text-xs sm:text-sm font-extrabold transition-all whitespace-nowrap ${
                         isSelected
                           ? 'bg-amber-500 text-slate-950'
                           : isUnlocked
@@ -943,20 +1028,21 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => startBattleStage(progress.stageNumber)}
-                className="rounded-xl bg-amber-500 px-6 py-3 text-sm font-extrabold text-slate-950 hover:bg-amber-400 transition-colors"
+                className="rounded-xl bg-amber-500 px-6 py-3 text-sm font-extrabold text-slate-950 hover:bg-amber-400 transition-colors whitespace-nowrap"
               >
-                ⚔️ برو به میدان نبرد (مرحله {progress.stageNumber})
+                ⚔️ برو به میدان نبرد جهان‌آزاد (مرحله {progress.stageNumber})
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* VIEW 3: ACTIVE BATTLE HUD (Clean, Guide-Free, 5 Camera Presets, 4-Way Movement D-Pad) */}
+      {/* VIEW 3: ACTIVE OPEN-WORLD BATTLE HUD */}
       {(appState === 'playing' || appState === 'paused' || appState === 'gameover') && (
         <GameHud
           tanks={tanks}
           trailingHp={trailingHp}
+          arena={arena}
           currentTurn={currentTurn}
           stageNumber={progress.stageNumber}
           biomeTitle={arena.biomeTitle}
@@ -969,7 +1055,8 @@ export default function App() {
           lastImpactBanner={lastImpactBanner}
           cameraPreset={cameraPreset}
           isMuted={isMuted}
-          onMoveTank={handleMoveTank}
+          onMoveTank={handleMoveTankStep}
+          onDriveHold={(throttle, steer) => setDriveInput({ throttle, steer })}
           onSelectShell={handleSelectShellInBattle}
           onFire={handleFire}
           onCycleCamera={() =>
@@ -993,14 +1080,16 @@ export default function App() {
           style={{ backgroundColor: 'rgba(8, 11, 16, 0.86)' }}
         >
           <div className="w-full max-w-md rounded-2xl border border-white/15 bg-[#121824] p-6 text-center shadow-2xl space-y-4">
-            <h2 className="text-2xl font-extrabold text-amber-400">توقف بازی · مرحله {progress.stageNumber}</h2>
+            <h2 className="text-2xl font-extrabold text-amber-400">
+              توقف بازی · مرحله {progress.stageNumber}
+            </h2>
             <div className="space-y-2.5">
               <button
                 type="button"
                 onClick={() => setAppState('playing')}
                 className="w-full rounded-xl bg-amber-500 py-3 text-sm font-extrabold text-slate-950 hover:bg-amber-400"
               >
-                ادامه نبرد
+                ادامه نبرد جهان‌آزاد
               </button>
               <button
                 type="button"
@@ -1040,12 +1129,12 @@ export default function App() {
               </h2>
               <p className="text-xs sm:text-sm text-slate-300 mt-1">
                 {matchOutcome.victory
-                  ? `مرحله ${matchOutcome.stageCleared} با موفقیت فتح شد · آماده ورود به مرحله ${progress.stageNumber} با نقشه جدید و دشمن قوی‌تر`
+                  ? `مرحله ${matchOutcome.stageCleared} با موفقیت فتح شد · آماده ورود به مرحله ${progress.stageNumber} در نقشه جهان‌آزاد جدید`
                   : `تلاش مجدد در مرحله ${progress.stageNumber} یا ارتقای تانک و گلوله در گاراژ`}
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 text-xs font-mono-num">
+            <div className="grid grid-cols-2 gap-3 text-xs font-mono-num tabular-nums">
               <div className="rounded-xl bg-[#0c1017] p-3 border border-amber-500/30">
                 <div className="text-slate-400">پاداش این نبرد</div>
                 <div className="text-lg font-extrabold text-amber-400 mt-0.5">
@@ -1065,10 +1154,10 @@ export default function App() {
                 type="button"
                 data-start="true"
                 onClick={() => startBattleStage(progress.stageNumber)}
-                className="w-full rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 py-3.5 text-base font-extrabold text-slate-950 shadow-lg hover:from-amber-400 hover:to-orange-400"
+                className="w-full rounded-xl bg-amber-500 py-3.5 text-base font-extrabold text-slate-950 shadow-lg hover:bg-amber-400"
               >
                 {matchOutcome.victory
-                  ? `⚔️ ورود به مرحله ${progress.stageNumber} (نقشه جدید و تانک دشمن قوی‌تر)`
+                  ? `⚔️ ورود به مرحله ${progress.stageNumber} (نقشه جدید و دشمن قوی‌تر)`
                   : `🔄 تلاش مجدد در مرحله ${progress.stageNumber}`}
               </button>
               <div className="grid grid-cols-2 gap-2">
@@ -1091,7 +1180,6 @@ export default function App() {
           </div>
         </div>
       )}
-
     </main>
   );
 }
