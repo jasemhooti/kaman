@@ -22,7 +22,6 @@ import {
 } from './game/physics';
 import { ArenaCanvas, type ActiveShotTrigger } from './game/ArenaCanvas';
 import { GameHud } from './components/GameHud';
-import { AndroidApkModal } from './components/AndroidApkModal';
 import { soundEngine } from './game/sound';
 
 type AppState = 'garage' | 'shop' | 'playing' | 'paused' | 'gameover';
@@ -195,7 +194,6 @@ export default function App() {
 
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('tactical');
   const [isMuted, setIsMuted] = useState<boolean>(false);
-  const [apkModalOpen, setApkModalOpen] = useState<boolean>(false);
   const [matchOutcome, setMatchOutcome] = useState<MatchOutcome | null>(null);
 
   const shotCounterRef = useRef<number>(1);
@@ -342,12 +340,12 @@ export default function App() {
         const maxX = -6.0; // Keep player tank on their side of the valley
         const nextX = Math.max(minX, Math.min(maxX, p1.x + dx));
         const nextZ = Math.max(-4.8, Math.min(4.8, p1.z + dz));
-        const nextY = terrainHeightAt(nextX, arena);
+        const nextY = terrainHeightAt(nextX, arena, nextZ);
 
         p1.x = nextX;
         p1.y = nextY;
         p1.z = nextZ;
-        p1.slopeAngle = terrainSlopeAt(nextX, arena);
+        p1.slopeAngle = terrainSlopeAt(nextX, arena, nextZ);
         p1.moveFuel = Math.max(0, p1.moveFuel - stepCost);
 
         // Automatically orient turret yaw toward enemy tank Z
@@ -535,7 +533,35 @@ export default function App() {
       } else {
         const targetIdx = currentTurn === 1 ? 1 : 0;
         const missDist = Math.abs(landingX - nextTanks[targetIdx].x);
-        showBanner('اصابت گلوله به زمین', `فاصله تا تانک هدف: ${missDist.toFixed(1)} متر`, 'miss', 1800);
+        showBanner(
+          'اصابت به زمین و ایجاد گودال انفجار',
+          `فاصله تا تانک هدف: ${missDist.toFixed(1)} متر`,
+          'miss',
+          1800
+        );
+      }
+
+      // Record physical 3D ground crater in arena state & settle tanks onto deformed terrain
+      if (result.craterRadius && result.craterDepth) {
+        const newCrater = {
+          id: `crater-${Date.now()}-${shotCounterRef.current}`,
+          x: result.hitPoint.x,
+          z: result.hitPoint.z,
+          radius: result.craterRadius,
+          depth: result.craterDepth,
+        };
+        const arenaWithCrater: BattlefieldConfig = {
+          ...arena,
+          craters: [...arena.craters, newCrater],
+        };
+        for (let i = 0; i < 2; i++) {
+          nextTanks[i].y = terrainHeightAt(nextTanks[i].x, arenaWithCrater, nextTanks[i].z);
+          nextTanks[i].slopeAngle = terrainSlopeAt(nextTanks[i].x, arenaWithCrater, nextTanks[i].z);
+        }
+        setArena((prevArena) => ({
+          ...prevArena,
+          craters: [...prevArena.craters, newCrater],
+        }));
       }
 
       // Check if either tank was destroyed
@@ -588,7 +614,7 @@ export default function App() {
       setWindSpeed(nextWind);
       setIsShotInFlight(false);
     },
-    [currentTurn, tanks, progress.stageNumber, turnCount, arena.biome, arena.seed, showBanner]
+    [currentTurn, tanks, progress.stageNumber, turnCount, arena, showBanner]
   );
 
   // Execute Enemy AI Tank Turn (Movement + Aiming + Firing)
@@ -615,7 +641,7 @@ export default function App() {
         const halfDist = arena.distance * 0.5;
         const nextX = Math.max(6.0, Math.min(halfDist + 8.5, prev[1].x + decision.moveDeltaX));
         const nextZ = Math.max(-4.5, Math.min(4.5, prev[1].z + decision.moveDeltaZ));
-        const nextY = terrainHeightAt(nextX, arena);
+        const nextY = terrainHeightAt(nextX, arena, nextZ);
         return [
           prev[0],
           {
@@ -623,7 +649,7 @@ export default function App() {
             x: nextX,
             y: nextY,
             z: nextZ,
-            slopeAngle: terrainSlopeAt(nextX, arena),
+            slopeAngle: terrainSlopeAt(nextX, arena, nextZ),
             barrelAngleDeg: decision.barrelAngleDeg,
             powerPct: decision.powerPct,
             turretYawRad: decision.turretYawRad,
@@ -712,14 +738,6 @@ export default function App() {
                 className="rounded-xl border border-sky-400/50 bg-sky-500/20 px-3.5 py-2 text-xs sm:text-sm font-extrabold text-sky-300 hover:bg-sky-500/30 transition-colors whitespace-nowrap"
               >
                 🚀 فروشگاه گلوله تانک
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setApkModalOpen(true)}
-                className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-xs sm:text-sm font-bold text-amber-300 hover:bg-amber-500/25 transition-colors whitespace-nowrap"
-              >
-                APK بازار/مایکت
               </button>
             </div>
           </div>
@@ -965,7 +983,6 @@ export default function App() {
             setIsMuted(m);
           }}
           onPause={() => setAppState('paused')}
-          onOpenApkModal={() => setApkModalOpen(true)}
         />
       )}
 
@@ -1075,8 +1092,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ANDROID APK MODAL (ir.jasem.ply - جنگ تانک ها) */}
-      <AndroidApkModal isOpen={apkModalOpen} onClose={() => setApkModalOpen(false)} />
     </main>
   );
 }

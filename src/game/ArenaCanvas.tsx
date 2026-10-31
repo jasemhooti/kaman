@@ -17,8 +17,9 @@ import {
 } from './physics';
 import {
   createBiomeSkyDome,
+  createCraterDecalMesh,
   createObstacleRig,
-  createProceduralTexture,
+  createPbrTextureSet,
   createShellMesh,
   createSupplyCrateMesh,
   createTankRig,
@@ -102,7 +103,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.22;
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -115,7 +116,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     const scene = new THREE.Scene();
     const fogColor = new THREE.Color(0x1e293b);
     scene.background = fogColor;
-    scene.fog = new THREE.FogExp2(0x1e293b, 0.0048);
+    scene.fog = new THREE.FogExp2(0x1e293b, 0.0042);
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -130,19 +131,19 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     const currentCamLook = new THREE.Vector3(0, 2.5, 0);
     camera.lookAt(currentCamLook);
 
-    // 3-Point Battlefield Lighting Rig
-    const hemiLight = new THREE.HemisphereLight(0x93c5fd, 0x452719, 1.05);
-    hemiLight.position.set(0, 65, 0);
+    // Realistic 3-Point Sun + Sky + Rim Lighting Rig
+    const hemiLight = new THREE.HemisphereLight(0xbae6fd, 0x573b26, 1.15);
+    hemiLight.position.set(0, 75, 0);
     scene.add(hemiLight);
 
-    const keyLight = new THREE.DirectionalLight(0xffe4b5, 2.5);
-    keyLight.position.set(22, 48, 32);
+    const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
+    keyLight.position.set(26, 52, 34);
     if (!isSoftwareGl) {
       keyLight.castShadow = true;
       keyLight.shadow.mapSize.set(1024, 1024);
       keyLight.shadow.camera.near = 5;
       keyLight.shadow.camera.far = 160;
-      const d = 46;
+      const d = 48;
       keyLight.shadow.camera.left = -d;
       keyLight.shadow.camera.right = d;
       keyLight.shadow.camera.top = d;
@@ -152,27 +153,93 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     }
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
-    rimLight.position.set(-32, 24, -26);
+    const rimLight = new THREE.DirectionalLight(0x7dd3fc, 1.05);
+    rimLight.position.set(-34, 28, -28);
     scene.add(rimLight);
 
-    const concreteTex = createProceduralTexture(renderer, '#64748b', '#475569', 'concrete');
-    const desertTex = createProceduralTexture(renderer, '#b4844e', '#855c31', 'terrain');
-    desertTex.repeat.set(14, 8);
-    const snowTex = createProceduralTexture(renderer, '#e2e8f0', '#94a3b8', 'terrain');
-    snowTex.repeat.set(14, 8);
-    const indTex = createProceduralTexture(renderer, '#475569', '#334155', 'terrain');
-    indTex.repeat.set(14, 8);
-    const volcTex = createProceduralTexture(renderer, '#292524', '#7c2d12', 'terrain');
-    volcTex.repeat.set(14, 8);
+    // High-Resolution PBR Texture Sets (Albedo + Tangent-Space Normal Map + Roughness Map)
+    const concreteMaps = createPbrTextureSet(renderer, '#64748b', '#475569', 'concrete');
+    const desertMaps = createPbrTextureSet(renderer, '#c2935b', '#8f6334', 'terrain_sand');
+    desertMaps.map.repeat.set(22, 14);
+    desertMaps.normalMap.repeat.set(22, 14);
+    desertMaps.roughnessMap.repeat.set(22, 14);
+
+    const snowMaps = createPbrTextureSet(renderer, '#e2e8f0', '#94a3b8', 'terrain_snow');
+    snowMaps.map.repeat.set(22, 14);
+    snowMaps.normalMap.repeat.set(22, 14);
+    snowMaps.roughnessMap.repeat.set(22, 14);
+
+    const indMaps = createPbrTextureSet(renderer, '#52525b', '#3f3f46', 'terrain_rock');
+    indMaps.map.repeat.set(22, 14);
+    indMaps.normalMap.repeat.set(22, 14);
+    indMaps.roughnessMap.repeat.set(22, 14);
+
+    const volcMaps = createPbrTextureSet(renderer, '#3a2e2b', '#7c2d12', 'terrain_rock');
+    volcMaps.map.repeat.set(22, 14);
+    volcMaps.normalMap.repeat.set(22, 14);
+    volcMaps.roughnessMap.repeat.set(22, 14);
 
     const arenaGroup = new THREE.Group();
     scene.add(arenaGroup);
 
+    let activeGroundGeo: THREE.PlaneGeometry | null = null;
     let tankRigs: [TankRig, TankRig] | null = null;
     let obstacleRigs: ObstacleRig[] = [];
     let crateRigs: CrateRig[] = [];
     let lastPosX: [number, number] = [0, 0];
+
+    /**
+     * Dynamically carves a 3D crater bowl into the terrain BufferGeometry and darkens vertex colors!
+     */
+    const carveTerrainCraterInMesh = (
+      cx: number,
+      cz: number,
+      radius: number,
+      depth: number
+    ) => {
+      if (!activeGroundGeo) return;
+      const posAttr = activeGroundGeo.attributes.position as THREE.BufferAttribute;
+      const colAttr = activeGroundGeo.attributes.color as THREE.BufferAttribute | undefined;
+
+      for (let i = 0; i < posAttr.count; i++) {
+        const vx = posAttr.getX(i);
+        const vz = posAttr.getZ(i);
+        const d = Math.hypot(vx - cx, vz - cz);
+
+        if (d < radius * 1.45) {
+          const u = d / radius;
+          let dy = 0;
+          if (u <= 1.0) {
+            dy = -depth * Math.cos(u * Math.PI * 0.5) * (1 - u * u * 0.35);
+          } else {
+            const rimT = (u - 1.0) / 0.45;
+            dy = depth * 0.2 * Math.sin(rimT * Math.PI);
+          }
+          posAttr.setY(i, posAttr.getY(i) + dy);
+
+          // Scorch vertex colors dark charcoal inside the blast radius
+          if (colAttr && u < 1.25) {
+            const scorch = Math.max(0.18, Math.min(1, u * 0.85));
+            colAttr.setXYZ(
+              i,
+              colAttr.getX(i) * scorch,
+              colAttr.getY(i) * scorch,
+              colAttr.getZ(i) * scorch
+            );
+          }
+        }
+      }
+
+      posAttr.needsUpdate = true;
+      if (colAttr) colAttr.needsUpdate = true;
+      activeGroundGeo.computeVertexNormals();
+
+      // Also place a 3D scorched crater decal & blasted rock chunks on the terrain surface
+      const cy = terrainHeightAt(cx, propsRef.current.arena, cz);
+      const slope = terrainSlopeAt(cx, propsRef.current.arena, cz);
+      const craterMesh = createCraterDecalMesh(cx, cy, cz, radius, depth, slope);
+      arenaGroup.add(craterMesh);
+    };
 
     // Direct 3D Dashed Trajectory Line right next to the tank barrel (Strictly 3..5m)
     const MAX_PREVIEW_VERTS = 44;
@@ -188,8 +255,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     const previewLine = new THREE.Line(previewGeo, previewMat);
     scene.add(previewLine);
 
-    // Glowing Aim Reticle Ring at the end of the 4.5m trajectory line
-    const previewTipGeo = new THREE.RingGeometry(0.16, 0.3, 18);
+    const previewTipGeo = new THREE.RingGeometry(0.16, 0.3, 24);
     const previewTipMat = new THREE.MeshBasicMaterial({
       color: 0xfbbf24,
       side: THREE.DoubleSide,
@@ -217,7 +283,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     const trailHistory: Array<{ x: number; y: number; z: number }> = [];
 
     // Expanding Explosion Shockwave Ring
-    const shockwaveGeo = new THREE.RingGeometry(0.6, 1.1, 24);
+    const shockwaveGeo = new THREE.RingGeometry(0.6, 1.15, 32);
     shockwaveGeo.rotateX(-Math.PI / 2);
     const shockwaveMat = new THREE.MeshBasicMaterial({
       color: 0xf97316,
@@ -229,14 +295,13 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     scene.add(shockwaveMesh);
     let shockwaveTimer = 0;
 
-    // Pooled Explosion & Smoke Particle Buffer
-    const PARTICLE_COUNT = 90;
-    const particleGeo = new THREE.DodecahedronGeometry(0.18, 0);
+    // Pooled Explosion, Dirt & Smoke Particle Buffer
+    const PARTICLE_COUNT = 110;
+    const particleGeo = new THREE.SphereGeometry(0.18, 8, 8);
     const particleMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.4,
+      roughness: 0.65,
       metalness: 0.1,
-      flatShading: true,
     });
     const particleInstanced = new THREE.InstancedMesh(particleGeo, particleMat, PARTICLE_COUNT);
     particleInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -276,7 +341,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
         const theta = Math.random() * Math.PI * 2;
         const speed = (2.2 + Math.random() * 6.5) * speedScale;
         p.vx = Math.cos(theta) * speed;
-        p.vy = (2.0 + Math.random() * 6.5) * speedScale;
+        p.vy = (2.4 + Math.random() * 6.8) * speedScale;
         p.vz = (Math.random() - 0.5) * 5.0 * speedScale;
         p.life = 0;
         p.maxLife = 0.45 + Math.random() * 0.55;
@@ -293,7 +358,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       shockwaveTimer = 0.45;
     };
 
-    // Weather Particle System (Sandstorm, Snowfall, Rain, Volcanic Ash)
+    // Weather Particle System
     const WEATHER_COUNT = 130;
     const weatherPositions = new Float32Array(WEATHER_COUNT * 6);
     for (let i = 0; i < WEATHER_COUNT; i++) {
@@ -313,12 +378,11 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     const weatherMat = new THREE.LineBasicMaterial({
       color: 0xe2e8f0,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.4,
     });
     const weatherLines = new THREE.LineSegments(weatherGeo, weatherMat);
     scene.add(weatherLines);
 
-    // Pre-allocated vectors & matrices for zero-GC render loop
     const _mat4 = new THREE.Matrix4();
     const _posVec = new THREE.Vector3();
     const _scaleVec = new THREE.Vector3();
@@ -327,7 +391,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     const _camTargetPos = new THREE.Vector3();
     const _camLookTarget = new THREE.Vector3();
 
-    // Build / Rebuild 3D Battlefield Terrain, Distant Mountains, Obstacles, Crates, and Tanks
+    // Build / Rebuild Smooth High-Res 3D Battlefield Terrain, Obstacles, Crates, and Tanks
     const buildBattlefieldScene = (
       arena: BattlefieldConfig,
       tanks: [TankCombatState, TankCombatState]
@@ -346,86 +410,92 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       }
 
       updateBiomeSky(arena.biome);
-      const selectedTerrainTex =
+      const selectedMaps =
         arena.biome === 'snow'
-          ? snowTex
+          ? snowMaps
           : arena.biome === 'industrial' || arena.biome === 'night'
-            ? indTex
+            ? indMaps
             : arena.biome === 'volcanic'
-              ? volcTex
-              : desertTex;
+              ? volcMaps
+              : desertMaps;
 
-      // 1. Sculpted 3D Battlefield Terrain Mesh (Width 220m, Depth 140m)
+      // 1. High-Resolution Smoothly Shaded 3D Terrain Mesh (200 x 84 segments, flatShading: false!)
       const width = 220;
       const depth = 140;
-      const segX = 120;
-      const segZ = 36;
+      const segX = 200;
+      const segZ = 84;
       const groundGeo = new THREE.PlaneGeometry(width, depth, segX, segZ);
       groundGeo.rotateX(-Math.PI / 2);
 
       const posAttr = groundGeo.attributes.position as THREE.BufferAttribute;
+      const colors = new Float32Array(posAttr.count * 3);
+
       for (let i = 0; i < posAttr.count; i++) {
         const vx = posAttr.getX(i);
         const vz = posAttr.getZ(i);
-        const baseH = terrainHeightAt(vx, arena);
+        const baseH = terrainHeightAt(vx, arena, vz);
 
         let extraMountain = 0;
         if (vz < -10) {
-          const backFactor = Math.min(1, (-10 - vz) / 48);
+          const backFactor = Math.min(1, (-10 - vz) / 50);
           const ridge =
-            Math.abs(Math.sin(vx * 0.06 + arena.seed * 0.01) * Math.cos(vx * 0.035)) * 22 +
-            Math.abs(Math.sin(vx * 0.14)) * 6;
+            (Math.sin(vx * 0.055 + arena.seed * 0.01) * 0.5 + 0.5) *
+              (Math.cos(vx * 0.032 - vz * 0.04) * 0.5 + 0.5) *
+              28 +
+            (Math.sin(vx * 0.13 + vz * 0.09) * 0.5 + 0.5) * 7.5;
           extraMountain = backFactor * backFactor * ridge;
-        } else if (vz > 8) {
-          const frontFactor = Math.min(1, (vz - 8) / 28);
-          extraMountain = -frontFactor * 3.5;
+        } else if (vz > 9) {
+          const frontFactor = Math.min(1, (vz - 9) / 28);
+          extraMountain = -frontFactor * 2.8;
         }
 
-        posAttr.setY(i, baseH + extraMountain);
+        const finalY = baseH + extraMountain;
+        posAttr.setY(i, finalY);
+
+        // Subtle elevation & slope vertex color modulation for natural terrain depth
+        const shade = Math.max(0.62, Math.min(1.12, 0.88 + finalY * 0.025));
+        colors[i * 3] = shade;
+        colors[i * 3 + 1] = shade * 0.98;
+        colors[i * 3 + 2] = shade * 0.94;
       }
+
+      groundGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
       groundGeo.computeVertexNormals();
+      activeGroundGeo = groundGeo;
 
       const groundMat = new THREE.MeshStandardMaterial({
-        map: selectedTerrainTex,
-        roughness: arena.biome === 'snow' ? 0.65 : 0.85,
-        metalness: 0.08,
-        flatShading: true,
+        map: selectedMaps.map,
+        normalMap: selectedMaps.normalMap,
+        normalScale: new THREE.Vector2(0.85, 0.85),
+        roughnessMap: selectedMaps.roughnessMap,
+        roughness: arena.biome === 'snow' ? 0.58 : 0.84,
+        metalness: 0.06,
+        vertexColors: true,
+        flatShading: false,
       });
       const groundMesh = new THREE.Mesh(groundGeo, groundMat);
       groundMesh.receiveShadow = true;
       arenaGroup.add(groundMesh);
 
-      // 2. Distant Mountain Silhouettes & Radar Towers / Pine Trees
-      const peakMat = new THREE.MeshStandardMaterial({
-        color:
-          arena.biome === 'snow'
-            ? 0x94a3b8
-            : arena.biome === 'volcanic'
-              ? 0x292524
-              : arena.biome === 'desert'
-                ? 0x78350f
-                : 0x1e293b,
-        roughness: 0.9,
-        flatShading: true,
-      });
-      for (let i = -4; i <= 4; i++) {
-        const px = i * 24 + ((arena.seed + i * 19) % 9);
-        const ph = 18 + Math.abs((i * 11 + arena.seed) % 16);
-        const peak = new THREE.Mesh(new THREE.ConeGeometry(14 + (i % 3) * 3, ph, 6), peakMat);
-        peak.position.set(px, ph * 0.42 - 2, -42 - Math.abs(i) * 3);
-        arenaGroup.add(peak);
+      // Re-apply any existing craters in arena.craters
+      if (arena.craters && arena.craters.length > 0) {
+        for (const c of arena.craters) {
+          const cy = terrainHeightAt(c.x, arena, c.z);
+          const slope = terrainSlopeAt(c.x, arena, c.z);
+          arenaGroup.add(createCraterDecalMesh(c.x, cy, c.z, c.radius, c.depth, slope));
+        }
       }
 
-      // 3. Destructible Obstacles
+      // 2. Destructible Military Obstacles
       obstacleRigs = [];
       for (const obs of arena.obstacles) {
         if (obs.destroyed) continue;
-        const oRig = createObstacleRig(obs, concreteTex);
+        const oRig = createObstacleRig(obs, concreteMaps);
         arenaGroup.add(oRig.group);
         obstacleRigs.push(oRig);
       }
 
-      // 4. Supply Crates (First-Aid Heal & Gold Coin Crates)
+      // 3. Supply Crates
       crateRigs = [];
       for (const crate of arena.crates) {
         if (crate.collected) continue;
@@ -434,7 +504,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
         crateRigs.push(cRig);
       }
 
-      // 5. Build Both 3D Tank Rigs
+      // 4. Build Both 50+ Part Realistic 3D Tank Rigs
       const rig1 = createTankRig(tanks[0].model, 1, renderer);
       rig1.root.position.set(tanks[0].x, tanks[0].y, tanks[0].z);
       arenaGroup.add(rig1.root);
@@ -450,7 +520,6 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     rebuildSceneArenaRef.current = buildBattlefieldScene;
     buildBattlefieldScene(propsRef.current.arena, propsRef.current.tanks);
 
-    // Active Shell Flight State
     let activeFlight: {
       shooterId: 1 | 2;
       x: number;
@@ -494,7 +563,6 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
         resolvedResult: null,
       };
 
-      // Update shell & tracer color to match the equipped shell type
       scene.remove(flyingShell);
       flyingShell = createShellMesh(shooter.shell.colorHex);
       flyingShell.visible = true;
@@ -508,21 +576,20 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       }
       shellTrailLine.visible = true;
 
-      // Trigger barrel recoil, muzzle flash, cannon blast audio, and muzzle smoke
       if (tankRigs) {
         const sRig = tankRigs[trigger.shooterId - 1];
-        sRig.recoilOffset = 0.42;
+        sRig.recoilOffset = 0.45;
         const flashMat = sRig.muzzleFlashMesh.material as THREE.MeshBasicMaterial;
         flashMat.opacity = 1.0;
       }
 
-      cameraTrauma = 0.32;
+      cameraTrauma = 0.35;
       soundEngine.playCannonBlast(shooter.model.barrelCount);
       soundEngine.startShellWhistle();
-      spawnParticles(origin.x, origin.y, origin.z, 14, shooter.shell.colorHex, 0.9, 1.1);
+      spawnParticles(origin.x, origin.y, origin.z, 16, shooter.shell.colorHex, 0.95, 1.15);
     };
 
-    // Direct Touch / Mouse Drag on 3D Canvas to Aim Tank Barrel (No Cluttered UI Sliders!)
+    // Direct Touch / Mouse Drag on 3D Canvas to Aim Tank Barrel
     let isDraggingAim = false;
     let dragStartX = 0;
     let dragStartY = 0;
@@ -638,7 +705,6 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
           const tState = currentProps.tanks[i];
           const rig = tankRigs[i];
 
-          // Smoothly interpolate tank hull position when driving
           rig.root.position.x = THREE.MathUtils.lerp(rig.root.position.x, tState.x, 1 - Math.exp(-12 * dt));
           rig.root.position.y = THREE.MathUtils.lerp(rig.root.position.y, tState.y, 1 - Math.exp(-12 * dt));
           rig.root.position.z = THREE.MathUtils.lerp(rig.root.position.z, tState.z, 1 - Math.exp(-12 * dt));
@@ -651,12 +717,11 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
             }
           }
 
-          const slopeRad = terrainSlopeAt(rig.root.position.x, currentProps.arena);
+          const slopeRad = terrainSlopeAt(rig.root.position.x, currentProps.arena, rig.root.position.z);
           updateTankPose(rig, tState.facing, tState.barrelAngleDeg, tState.turretYawRad, slopeRad, dt);
 
           if (rig.turretBlownOff) {
-            stepFlyingTurret(rig, dt, (x) => terrainHeightAt(x, currentProps.arena));
-            // Emit continuous dark smoke & embers from the destroyed hull ring
+            stepFlyingTurret(rig, dt, (x) => terrainHeightAt(x, currentProps.arena, rig.root.position.z));
             if (Math.random() < 0.35) {
               spawnParticles(rig.root.position.x, rig.root.position.y + 1.1, rig.root.position.z, 1, 0x27272a, 0.45, 1.3);
             }
@@ -664,7 +729,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
         }
       }
 
-      // 2. Sync Obstacles & Supply Crates visibility (hide in Garage/Shop so the 3D Tank showcase is 100% unobstructed!)
+      // 2. Sync Obstacles & Supply Crates visibility
       const inBattle =
         currentProps.appState === 'playing' ||
         currentProps.appState === 'paused' ||
@@ -722,7 +787,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
         previewTipMesh.lookAt(camera.position);
       }
 
-      // 4. Step Active Flying Artillery Shell
+      // 4. Step Active Flying Artillery Shell & Deform 3D Terrain Craters on Impact!
       if (activeFlight && hitstopTimer <= 0) {
         if (!activeFlight.resolvedResult) {
           const subSteps = 3;
@@ -773,9 +838,11 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
             if (Math.abs(activeFlight.x) > currentProps.arena.distance * 1.35 || activeFlight.y < -25) {
               hitResult = {
                 hitType: 'ground',
+                craterRadius: 2.6,
+                craterDepth: 0.72,
                 impactPoint: {
                   x: activeFlight.x,
-                  y: terrainHeightAt(activeFlight.x, currentProps.arena),
+                  y: terrainHeightAt(activeFlight.x, currentProps.arena, activeFlight.z),
                   z: activeFlight.z,
                 },
               };
@@ -783,12 +850,10 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
             }
           }
 
-          // Orient shell along velocity vector
           flyingShell.position.set(activeFlight.x, activeFlight.y, activeFlight.z);
           const pitchAngle = Math.atan2(activeFlight.vy, activeFlight.vx);
           flyingShell.rotation.z = pitchAngle;
 
-          // Update tracer ribbon
           trailHistory.unshift({ x: activeFlight.x, y: activeFlight.y, z: activeFlight.z });
           if (trailHistory.length > TRAIL_LENGTH) trailHistory.pop();
           const tPos = trailGeo.attributes.position as THREE.BufferAttribute;
@@ -803,13 +868,20 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
           if (hitResult) {
             soundEngine.stopShellWhistle();
             activeFlight.resolvedResult = hitResult;
-            activeFlight.postImpactTimer = 0.52;
+            activeFlight.postImpactTimer = 0.54;
             flyingShell.visible = false;
             shellTrailLine.visible = false;
 
             const ix = hitResult.impactPoint.x;
             const iy = hitResult.impactPoint.y;
             const iz = hitResult.impactPoint.z;
+
+            // Carve a 3D crater into the terrain mesh whenever the shell hits ground or explodes near ground!
+            const cRadius = hitResult.craterRadius || 2.6;
+            const cDepth = hitResult.craterDepth || 0.75;
+            if (hitResult.hitType === 'ground' || hitResult.hitZone === 'tracks' || hitResult.hitType === 'obstacle') {
+              carveTerrainCraterInMesh(ix, iz, cRadius, cDepth);
+            }
 
             if (hitResult.hitType === 'tank' && hitResult.targetTankId && tankRigs) {
               const targetIdx = hitResult.targetTankId - 1;
@@ -823,12 +895,13 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
               cameraTrauma = isLethal ? 1.0 : isTurret ? 0.72 : 0.45;
 
               triggerShockwave(ix, iy, iz, isLethal ? 0xef4444 : 0xf97316);
-              spawnParticles(ix, iy, iz, isLethal ? 42 : 24, isTurret ? 0xef4444 : 0xf97316, isLethal ? 1.65 : 1.15, 1.3);
-              spawnParticles(ix, iy + 0.4, iz, isLethal ? 24 : 10, 0x27272a, 0.85, 1.5);
+              spawnParticles(ix, iy, iz, isLethal ? 46 : 26, isTurret ? 0xef4444 : 0xf97316, isLethal ? 1.65 : 1.15, 1.3);
+              spawnParticles(ix, iy + 0.4, iz, isLethal ? 26 : 12, 0x27272a, 0.85, 1.5);
 
               if (isLethal) {
                 soundEngine.playTankExplosion();
                 triggerTankExplosion(targetRig, scene);
+                carveTerrainCraterInMesh(targetState.x, targetState.z, 3.6, 0.95);
               } else {
                 soundEngine.playImpactArmor(isTurret);
               }
@@ -841,12 +914,15 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
               cameraTrauma = 0.48;
               soundEngine.playImpactArmor(false);
               triggerShockwave(ix, iy, iz, 0xf59e0b);
-              spawnParticles(ix, iy, iz, 26, 0x94a3b8, 1.25, 1.2);
+              spawnParticles(ix, iy, iz, 28, 0x94a3b8, 1.25, 1.2);
             } else {
-              cameraTrauma = 0.28;
+              cameraTrauma = 0.34;
               soundEngine.playImpactGround();
               triggerShockwave(ix, iy, iz, 0xd97706);
-              spawnParticles(ix, iy, iz, 16, 0xb4844e, 0.9, 1.0);
+              // Erupt dirt clods, fire flash, and dark smoke from the freshly carved crater
+              spawnParticles(ix, iy, iz, 24, 0x78350f, 1.15, 1.25);
+              spawnParticles(ix, iy + 0.2, iz, 14, 0xf97316, 0.95, 1.1);
+              spawnParticles(ix, iy + 0.35, iz, 12, 0x27272a, 0.75, 1.4);
             }
           }
         } else {
@@ -922,7 +998,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       }
       wAttr.needsUpdate = true;
 
-      // 7. 5-Angle Camera Choreography (Supports Garage Orbit + 5 Battle Camera Presets in Portrait & Landscape!)
+      // 7. 5-Angle Camera Choreography (Garage Showcase + 5 Battle Camera Presets)
       const p1 = currentProps.tanks[0];
       const p2 = currentProps.tanks[1];
       const curTank = currentProps.tanks[currentProps.currentTurn - 1];
@@ -931,20 +1007,17 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
       const isPortrait = camera.aspect < 1.0;
 
       if (currentProps.appState === 'garage' || currentProps.appState === 'shop') {
-        // 3D Garage Showcase Camera orbiting the front hemisphere of the Player's Tank
-        // Offset lookAt downward so the 3D Tank projects into the open upper-middle viewport above the Garage panel!
         const swayAngle = 0.58 + Math.sin(elapsed * 0.55) * 0.45;
-        const radius = isPortrait ? 6.8 : 5.8;
+        const radius = isPortrait ? 7.6 : 6.7;
         _camTargetPos.set(
           p1.x + Math.cos(swayAngle) * radius,
-          p1.y + (isPortrait ? 1.85 : 2.1),
+          p1.y + (isPortrait ? 2.25 : 2.35),
           p1.z + Math.sin(swayAngle) * radius
         );
-        _camLookTarget.set(p1.x + 0.2, p1.y - (isPortrait ? 1.35 : 0.15), p1.z);
+        _camLookTarget.set(p1.x + 0.15, p1.y + (isPortrait ? -0.45 : 0.48), p1.z);
         camera.position.copy(_camTargetPos);
         currentCamLook.copy(_camLookTarget);
       } else if (activeFlight && currentProps.cameraPreset === 'cinematic') {
-        // Preset 5: Shell Follow Cinematic Camera
         const dirSign = activeFlight.shooterId === 1 ? 1 : -1;
         if (isPortrait) {
           _camTargetPos.set(activeFlight.x - dirSign * 10.5, Math.max(3.5, activeFlight.y + 3.6), activeFlight.z + 5.2);
@@ -954,7 +1027,6 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
           _camLookTarget.set(activeFlight.x, Math.max(1.2, activeFlight.y + 0.3), activeFlight.z);
         }
       } else if (currentProps.cameraPreset === 'turret') {
-        // Preset 1: Behind-the-Turret 3D Aiming View
         const side = curTank.facing;
         _camTargetPos.set(
           curTank.x - side * (isPortrait ? 9.5 : 8.2),
@@ -967,12 +1039,10 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
           oppTank.z * 0.5
         );
       } else if (currentProps.cameraPreset === 'drone') {
-        // Preset 4: Top-Down Strategic Drone View
         const dist = currentProps.arena.distance;
         _camTargetPos.set(0, midY + (isPortrait ? dist * 1.15 : dist * 0.78), isPortrait ? 18 : 24);
         _camLookTarget.set(0, midY - 1.0, 0);
       } else if (currentProps.cameraPreset === 'side') {
-        // Preset 3: Wide Side Artillery View
         const dist = currentProps.arena.distance;
         if (isPortrait) {
           const side = curTank.facing;
@@ -983,7 +1053,6 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
           _camLookTarget.set(0, midY - 0.2, 0);
         }
       } else {
-        // Preset 2 ('tactical' / 'cinematic' while aiming): 3/4 Tactical Diagonal View
         const side = curTank.facing;
         if (isPortrait) {
           _camTargetPos.set(curTank.x - side * 14.2, curTank.y + 7.4, curTank.z + 3.4);
@@ -1029,12 +1098,12 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     };
   }, []);
 
-  // Rebuild 3D battlefield whenever arena seed/stage or selected tank model changes
+  // Rebuild 3D battlefield ONLY when stage/seed or tank models change (preserve carved craters during stage!)
   useEffect(() => {
     if (rebuildSceneArenaRef.current) {
       rebuildSceneArenaRef.current(props.arena, props.tanks);
     }
-  }, [props.arena, props.tanks[0].model.id, props.tanks[1].model.id]);
+  }, [props.arena.seed, props.arena.stageNumber, props.tanks[0].model.id, props.tanks[1].model.id]);
 
   // Trigger shell launch when shotTrigger increments
   useEffect(() => {
@@ -1048,7 +1117,7 @@ export const ArenaCanvas: React.FC<ArenaCanvasProps> = (props) => {
     <div
       ref={mountRef}
       className="fixed inset-0 w-screen h-screen overflow-hidden cursor-crosshair touch-none"
-      aria-label="میدان نبرد سه‌بعدی جنگ تانک‌ها"
+      aria-label="میدان نبرد سه‌بعدی جنگ تانک ها"
     />
   );
 };

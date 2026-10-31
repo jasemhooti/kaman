@@ -27,6 +27,7 @@ export interface ShellSpec {
   damageMultiplier: number;
   muzzleVelocityMultiplier: number;
   blastRadius: number;
+  craterDepth: number;
   colorHex: number;
   badgeColor: string;
   description: string;
@@ -80,6 +81,14 @@ export interface SupplyCrate {
   value: number; // +25% HP or +50 coins
 }
 
+export interface TerrainCrater {
+  id: string;
+  x: number;
+  z: number;
+  radius: number;
+  depth: number;
+}
+
 export interface BattlefieldConfig {
   seed: number;
   stageNumber: number;
@@ -94,6 +103,7 @@ export interface BattlefieldConfig {
   roughnessAmp: number;
   obstacles: DestructibleObstacle[];
   crates: SupplyCrate[];
+  craters: TerrainCrater[];
 }
 
 export interface TrajectoryPoint {
@@ -113,13 +123,15 @@ export interface HitDetectionResult {
   obstacleId?: string;
   crateId?: string;
   damage?: number;
+  craterRadius?: number;
+  craterDepth?: number;
   impactPoint: { x: number; y: number; z: number };
 }
 
 export const GRAVITY = 9.81;
 export const MIN_MUZZLE_SPEED = 14;
 export const MAX_MUZZLE_SPEED = 42;
-// Short trajectory guide line right next to the tank barrel (4.5 meters)
+// Short trajectory guide line right next to the tank barrel (4.6 meters)
 export const TRAJECTORY_PREVIEW_MAX_METERS = 4.6;
 
 /**
@@ -138,11 +150,11 @@ export const TANK_CATALOG: TankModelSpec[] = [
     damageMultiplier: 1.0,
     moveFuelMax: 5.5,
     barrelCount: 1,
-    hullColor: '#4d5d42',
-    turretColor: '#3f4d36',
-    accentColor: '#eab308',
+    hullColor: '#4b5842',
+    turretColor: '#3d4836',
+    accentColor: '#d97706',
     scale: 1.0,
-    description: 'تانک چابک خط مقدم با مصرف سوخت بهینه و چرخش سریع برجک',
+    description: 'تانک چابک خط مقدم با زره واکنشی و چرخش سریع برجک',
   },
   {
     id: 'saeqeh_2',
@@ -150,13 +162,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     name: 'صاعقه صحرا',
     codeName: 'SAEQEH DESERT',
     price: 0,
-    armorMultiplier: 1.04,
-    damageMultiplier: 1.04,
-    moveFuelMax: 5.0,
+    armorMultiplier: 1.05,
+    damageMultiplier: 1.05,
+    moveFuelMax: 5.2,
     barrelCount: 1,
-    hullColor: '#9a7b4f',
-    turretColor: '#7d623c',
-    accentColor: '#f59e0b',
+    hullColor: '#a6895b',
+    turretColor: '#8c7147',
+    accentColor: '#ea580c',
     scale: 1.03,
     description: 'تانک استتار صحرایی با پایداری بالا روی تپه‌های شنی',
   },
@@ -166,13 +178,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     name: 'عقرب زرهی',
     codeName: 'SCORPION AFV',
     price: 0,
-    armorMultiplier: 1.08,
-    damageMultiplier: 1.07,
-    moveFuelMax: 5.2,
+    armorMultiplier: 1.09,
+    damageMultiplier: 1.08,
+    moveFuelMax: 5.4,
     barrelCount: 1,
     hullColor: '#475569',
     turretColor: '#334155',
-    accentColor: '#38bdf8',
+    accentColor: '#0284c7',
     scale: 1.05,
     description: 'شاسی پهن زرهی با سیستم تعلیق مقاوم در برابر موج انفجار',
   },
@@ -182,15 +194,15 @@ export const TANK_CATALOG: TankModelSpec[] = [
     name: 'ببر فولادی',
     codeName: 'STEEL TIGER',
     price: 150,
-    armorMultiplier: 1.15,
-    damageMultiplier: 1.15,
+    armorMultiplier: 1.16,
+    damageMultiplier: 1.16,
     moveFuelMax: 5.6,
     barrelCount: 1,
     hullColor: '#3f6212',
     turretColor: '#365314',
-    accentColor: '#84cc16',
+    accentColor: '#65a30d',
     scale: 1.08,
-    description: 'زره کامپوزیت چندلایه و توپ ۱۱۰ میلی‌متری دوربرد',
+    description: 'زره کامپوزیت چندلایه و توپ ۱۲۰ میلی‌متری دوربرد',
   },
   {
     id: 'tondar_5',
@@ -198,13 +210,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     name: 'تندر واکنش‌گر',
     codeName: 'THUNDER ERA',
     price: 320,
-    armorMultiplier: 1.24,
+    armorMultiplier: 1.25,
     damageMultiplier: 1.25,
     moveFuelMax: 5.8,
     barrelCount: 1,
     hullColor: '#52525b',
     turretColor: '#3f3f46',
-    accentColor: '#f97316',
+    accentColor: '#ea580c',
     scale: 1.1,
     description: 'مجهز به بلوک‌های زره واکنشی انفجاری و موتور توربودیزل',
   },
@@ -214,13 +226,13 @@ export const TANK_CATALOG: TankModelSpec[] = [
     name: 'شهاب سنگین',
     codeName: 'SHAHAB HEAVY',
     price: 550,
-    armorMultiplier: 1.35,
+    armorMultiplier: 1.36,
     damageMultiplier: 1.36,
     moveFuelMax: 6.0,
     barrelCount: 1,
     hullColor: '#1e3a8a',
     turretColor: '#172554',
-    accentColor: '#60a5fa',
+    accentColor: '#3b82f6',
     scale: 1.13,
     description: 'تانک سنگین کالیبر ۱۲۵ میلی‌متری با قدرت تخریب سنگر بالا',
   },
@@ -236,7 +248,7 @@ export const TANK_CATALOG: TankModelSpec[] = [
     barrelCount: 2,
     hullColor: '#7f1d1d',
     turretColor: '#5c1414',
-    accentColor: '#f87171',
+    accentColor: '#ef4444',
     scale: 1.16,
     description: 'برجک دو لول هم‌زمان با شاسی فوق‌سنگین و زره مقاوم',
   },
@@ -252,7 +264,7 @@ export const TANK_CATALOG: TankModelSpec[] = [
     barrelCount: 2,
     hullColor: '#334155',
     turretColor: '#1e293b',
-    accentColor: '#22d3ee',
+    accentColor: '#06b6d4',
     scale: 1.2,
     description: 'بدنه تیتانیومی ضدنفوذ با دو توپ موازی کالیبر سنگین',
   },
@@ -266,9 +278,9 @@ export const TANK_CATALOG: TankModelSpec[] = [
     damageMultiplier: 1.78,
     moveFuelMax: 7.0,
     barrelCount: 2,
-    hullColor: '#18181b',
-    turretColor: '#09090b',
-    accentColor: '#a855f7',
+    hullColor: '#27272a',
+    turretColor: '#18181b',
+    accentColor: '#9333ea',
     scale: 1.22,
     description: 'تانک نسل پنجم رادارگریز با سامانه نشانه‌گیری لیزری',
   },
@@ -284,7 +296,7 @@ export const TANK_CATALOG: TankModelSpec[] = [
     barrelCount: 2,
     hullColor: '#78350f',
     turretColor: '#451a03',
-    accentColor: '#fbbf24',
+    accentColor: '#eab308',
     scale: 1.26,
     description: 'قوی‌ترین ابرتانک دو لول بازی با زره طلایی-تیتانیوم و قدرت ویرانگر',
   },
@@ -301,7 +313,8 @@ export const SHELL_CATALOG: ShellSpec[] = [
     minTankIndex: 0,
     damageMultiplier: 1.0,
     muzzleVelocityMultiplier: 1.0,
-    blastRadius: 2.3,
+    blastRadius: 2.6,
+    craterDepth: 0.72,
     colorHex: 0xf59e0b,
     badgeColor: '#f59e0b',
     description: 'مهمات نامحدود پایه با تعادل عالی بین سرعت و قدرت انفجار',
@@ -313,7 +326,8 @@ export const SHELL_CATALOG: ShellSpec[] = [
     minTankIndex: 0,
     damageMultiplier: 1.22,
     muzzleVelocityMultiplier: 1.08,
-    blastRadius: 2.5,
+    blastRadius: 2.8,
+    craterDepth: 0.85,
     colorHex: 0x38bdf8,
     badgeColor: '#38bdf8',
     description: 'سرعت دهانه بالاتر و +۲۲٪ تخریب بیشتر روی زره و برجک تانک (مهمات نامحدود)',
@@ -325,10 +339,11 @@ export const SHELL_CATALOG: ShellSpec[] = [
     minTankIndex: 2,
     damageMultiplier: 1.38,
     muzzleVelocityMultiplier: 0.96,
-    blastRadius: 3.5,
+    blastRadius: 3.8,
+    craterDepth: 1.15,
     colorHex: 0xf97316,
     badgeColor: '#f97316',
-    description: 'موج انفجار وسیع و +۳۸٪ قدرت تخریب روی تانک و سنگرها (مهمات نامحدود)',
+    description: 'موج انفجار وسیع، گودال عمیق و +۳۸٪ قدرت تخریب روی تانک و سنگرها (مهمات نامحدود)',
   },
   {
     id: 'shell_plasma',
@@ -337,10 +352,11 @@ export const SHELL_CATALOG: ShellSpec[] = [
     minTankIndex: 4,
     damageMultiplier: 1.6,
     muzzleVelocityMultiplier: 1.05,
-    blastRadius: 4.2,
+    blastRadius: 4.5,
+    craterDepth: 1.4,
     colorHex: 0xa855f7,
     badgeColor: '#a855f7',
-    description: 'قوی‌ترین گلوله حرارتی با +۶۰٪ تخریب مرگبار و شعاع انفجار گسترده (مهمات نامحدود)',
+    description: 'قوی‌ترین گلوله حرارتی با +۶۰٪ تخریب مرگبار و حفر گودال عمیق (مهمات نامحدود)',
   },
 ];
 
@@ -368,14 +384,13 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
   const rng = seededRandom(seed + stageNumber * 7919);
   const biomeEntry = BIOME_LIST[(stageNumber - 1) % BIOME_LIST.length];
 
-  // Larger battlefield distance: 54m to 76m
   const distance = Math.round(54 + rng() * 20 + Math.min(10, stageNumber * 1.2));
-  const leftHillHeight = Number(((rng() - 0.35) * 4.8).toFixed(2));
-  const rightHillHeight = Number(((rng() - 0.35) * 4.8).toFixed(2));
-  const centerRidgeHeight = Number((0.8 + rng() * 3.4).toFixed(2));
+  const leftHillHeight = Number(((rng() - 0.35) * 4.6).toFixed(2));
+  const rightHillHeight = Number(((rng() - 0.35) * 4.6).toFixed(2));
+  const centerRidgeHeight = Number((0.8 + rng() * 3.2).toFixed(2));
   const centerRidgeX = Number(((rng() - 0.5) * 14).toFixed(2));
-  const roughnessFreq = Number((0.12 + rng() * 0.08).toFixed(3));
-  const roughnessAmp = Number((0.28 + rng() * 0.38).toFixed(2));
+  const roughnessFreq = Number((0.09 + rng() * 0.06).toFixed(3));
+  const roughnessAmp = Number((0.25 + rng() * 0.32).toFixed(2));
 
   const tempArena: BattlefieldConfig = {
     seed,
@@ -391,9 +406,9 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
     roughnessAmp,
     obstacles: [],
     crates: [],
+    craters: [],
   };
 
-  // Spawn 3 to 4 destructible battlefield obstacles in the middle zone
   const obstacleKinds: DestructibleObstacle['kind'][] = ['bunker', 'fuel_tank', 'rock', 'wall'];
   const count = 3 + (rng() > 0.45 ? 1 : 0);
   const span = distance * 0.46;
@@ -404,32 +419,32 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
     const ox = Number((t * span + (rng() - 0.5) * 4.5).toFixed(2));
     const oz = Number(((rng() - 0.5) * 3.2).toFixed(2));
     const kind = obstacleKinds[Math.floor(rng() * obstacleKinds.length)];
-    const oy = terrainHeightAt(ox, tempArena);
+    const oy = terrainHeightAt(ox, tempArena, oz);
 
-    let width = 2.4;
-    let height = 2.4;
-    let depth = 2.4;
+    let width = 2.6;
+    let height = 2.5;
+    let depth = 2.6;
     let maxHp = 75;
 
     if (kind === 'fuel_tank') {
-      width = 1.8;
-      height = 2.2;
-      depth = 1.8;
+      width = 2.0;
+      height = 2.5;
+      depth = 2.0;
       maxHp = 45;
     } else if (kind === 'bunker') {
-      width = 3.2;
-      height = 2.8;
-      depth = 3.0;
+      width = 3.6;
+      height = 2.7;
+      depth = 3.2;
       maxHp = 110;
     } else if (kind === 'wall') {
-      width = 2.2;
-      height = 3.4;
-      depth = 3.6;
+      width = 2.4;
+      height = 3.2;
+      depth = 3.8;
       maxHp = 130;
     } else {
-      width = 2.8;
+      width = 3.0;
       height = 2.6;
-      depth = 2.6;
+      depth = 2.8;
       maxHp = 95;
     }
 
@@ -448,29 +463,30 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
     });
   }
 
-  // Spawn 2 Supply Crates (1 First-Aid Heal Crate near player's driving range + 1 Gold Coin Crate in midfield)
   const halfDist = distance * 0.5;
-  const healCrateX = Number((-halfDist + 4.2 + rng() * 3.2).toFixed(2));
+  const healCrateX = Number((-halfDist + 4.4 + rng() * 3.0).toFixed(2));
   const coinCrateX = Number(((rng() - 0.5) * (distance * 0.35)).toFixed(2));
+  const healZ = Number(((rng() - 0.5) * 2.4).toFixed(2));
+  const coinZ = Number(((rng() - 0.5) * 2.4).toFixed(2));
 
   const crates: SupplyCrate[] = [
     {
       id: `crate-heal-${stageNumber}`,
       kind: 'heal',
       x: healCrateX,
-      y: terrainHeightAt(healCrateX, tempArena),
-      z: Number(((rng() - 0.5) * 2.4).toFixed(2)),
+      y: terrainHeightAt(healCrateX, tempArena, healZ),
+      z: healZ,
       collected: false,
-      value: 25, // +25% HP
+      value: 25,
     },
     {
       id: `crate-coin-${stageNumber}`,
       kind: 'coins',
       x: coinCrateX,
-      y: terrainHeightAt(coinCrateX, tempArena),
-      z: Number(((rng() - 0.5) * 2.4).toFixed(2)),
+      y: terrainHeightAt(coinCrateX, tempArena, coinZ),
+      z: coinZ,
       collected: false,
-      value: 55 + stageNumber * 10, // Bonus coins
+      value: 55 + stageNumber * 10,
     },
   ];
 
@@ -480,41 +496,60 @@ export function generateBattlefieldConfig(seed: number = Date.now(), stageNumber
 }
 
 /**
- * Evaluates terrain elevation y at horizontal coordinate x.
+ * Evaluates smooth natural terrain height y at (x, z), including dynamic shell impact craters!
  */
-export function terrainHeightAt(x: number, arena: BattlefieldConfig): number {
+export function terrainHeightAt(x: number, arena: BattlefieldConfig, z: number = 0): number {
   const halfDist = arena.distance * 0.5;
 
   const leftDist = x - -halfDist;
-  const leftHill = arena.leftHillHeight * Math.exp(-(leftDist * leftDist) / 75);
+  const leftHill = arena.leftHillHeight * Math.exp(-(leftDist * leftDist) / 85);
 
   const rightDist = x - halfDist;
-  const rightHill = arena.rightHillHeight * Math.exp(-(rightDist * rightDist) / 75);
+  const rightHill = arena.rightHillHeight * Math.exp(-(rightDist * rightDist) / 85);
 
   const centerDist = x - arena.centerRidgeX;
-  const centerRidge = arena.centerRidgeHeight * Math.exp(-(centerDist * centerDist) / 95);
+  const centerRidge = arena.centerRidgeHeight * Math.exp(-(centerDist * centerDist) / 105);
 
-  // Smooth out micro-roughness directly under the tank spawn zones
   const platformMask =
     1 -
-    0.75 * Math.exp(-(leftDist * leftDist) / 22) -
-    0.75 * Math.exp(-(rightDist * rightDist) / 22);
+    0.75 * Math.exp(-(leftDist * leftDist) / 24) -
+    0.75 * Math.exp(-(rightDist * rightDist) / 24);
   const microRoughness =
-    Math.sin(x * arena.roughnessFreq) *
-    Math.cos(x * arena.roughnessFreq * 0.63) *
+    (Math.sin(x * arena.roughnessFreq + z * 0.08) *
+      Math.cos(x * arena.roughnessFreq * 0.61 - z * 0.06) +
+      0.35 * Math.sin(x * 0.23 + z * 0.19)) *
     arena.roughnessAmp *
     Math.max(0, platformMask);
 
-  return leftHill + rightHill + centerRidge + microRoughness;
+  // Subtract dynamic impact craters (bowl depression + subtle raised rim)
+  let craterDelta = 0;
+  if (arena.craters && arena.craters.length > 0) {
+    for (const c of arena.craters) {
+      const d = Math.hypot(x - c.x, z - c.z);
+      if (d < c.radius * 1.35) {
+        const u = d / c.radius;
+        if (u <= 1.0) {
+          // Deep parabolic-cosine crater bowl
+          craterDelta -= c.depth * Math.cos(u * Math.PI * 0.5) * (1 - u * u * 0.35);
+        } else {
+          // Raised blast ejecta rim between 1.0R and 1.35R
+          const rimT = (u - 1.0) / 0.35;
+          craterDelta += c.depth * 0.18 * Math.sin(rimT * Math.PI);
+        }
+      }
+    }
+  }
+
+  return leftHill + rightHill + centerRidge + microRoughness + craterDelta;
 }
 
 /**
- * Computes terrain slope angle (in radians) at x so the tank hull tilts naturally on uneven slopes.
+ * Computes terrain slope angle (in radians) at (x, z) so the tank hull tilts naturally on slopes and craters.
  */
-export function terrainSlopeAt(x: number, arena: BattlefieldConfig): number {
+export function terrainSlopeAt(x: number, arena: BattlefieldConfig, z: number = 0): number {
   const delta = 0.6;
-  const y1 = terrainHeightAt(x - delta, arena);
-  const y2 = terrainHeightAt(x + delta, arena);
+  const y1 = terrainHeightAt(x - delta, arena, z);
+  const y2 = terrainHeightAt(x + delta, arena, z);
   return Math.atan2(y2 - y1, delta * 2);
 }
 
@@ -541,8 +576,8 @@ export function getTankMuzzleOrigin(tank: TankCombatState): { x: number; y: numb
   const angleRad = (tank.barrelAngleDeg * Math.PI) / 180;
   const dir = tank.facing;
   const scale = tank.model.scale;
-  const turretPivotY = tank.y + 1.45 * scale;
-  const barrelLen = 3.1 * scale;
+  const turretPivotY = tank.y + 1.48 * scale;
+  const barrelLen = 3.35 * scale;
 
   const mx = tank.x + dir * Math.cos(angleRad) * barrelLen * Math.cos(tank.turretYawRad);
   const my = turretPivotY + Math.sin(angleRad) * barrelLen;
@@ -644,7 +679,6 @@ export function checkTankHitbox(
   const dx = Math.abs(px - tank.x);
   const dz = Math.abs(pz - tank.z);
 
-  // Check Z depth tolerance (tank width + shell blast proximity)
   const zLimit = 1.85 * s + (attacker.shell.blastRadius - 2.2) * 0.35;
   if (dz > zLimit) return null;
 
@@ -653,21 +687,18 @@ export function checkTankHitbox(
     (attacker.model.damageMultiplier * attacker.shell.damageMultiplier) /
     Math.max(0.8, tank.model.armorMultiplier);
 
-  // 1. Turret / Cupola Weakspot: relY in [1.28, 2.35], horizontal radius <= 1.45 * s
   if (relY >= 1.28 && relY <= 2.35 && dx <= 1.45 * s) {
     const centerFactor = 1 - Math.min(1, dx / (1.45 * s));
     const rawDamage = (38 + centerFactor * 14) * combatRatio;
     return { hitZone: 'turret', damage: Math.round(Math.max(25, Math.min(95, rawDamage))) };
   }
 
-  // 2. Main Armored Hull: relY in [0.62, 1.28), horizontal half-length <= 2.35 * s
   if (relY >= 0.62 && relY < 1.28 && dx <= 2.35 * s) {
     const centerFactor = 1 - Math.min(1, dx / (2.35 * s));
     const rawDamage = (24 + centerFactor * 10) * combatRatio;
     return { hitZone: 'hull', damage: Math.round(Math.max(16, Math.min(65, rawDamage))) };
   }
 
-  // 3. Tracks & Roadwheels: relY in [0.0, 0.62), horizontal half-length <= 2.55 * s
   if (relY >= 0.0 && relY < 0.62 && dx <= 2.55 * s) {
     const centerFactor = 1 - Math.min(1, dx / (2.55 * s));
     const rawDamage = (14 + centerFactor * 6) * combatRatio;
@@ -719,6 +750,8 @@ export function evaluatePointCollision(
         targetTankId: tank.id,
         hitZone: hit.hitZone,
         damage: hit.damage,
+        craterRadius: shooter.shell.blastRadius * 0.85,
+        craterDepth: shooter.shell.craterDepth * 0.5,
         impactPoint: { x: px, y: py, z: pz },
       };
     }
@@ -740,15 +773,16 @@ export function evaluatePointCollision(
         hitType: 'obstacle',
         obstacleId: obs.id,
         damage: Math.round(45 * shooter.shell.damageMultiplier * shooter.model.damageMultiplier),
+        craterRadius: shooter.shell.blastRadius * 0.9,
+        craterDepth: shooter.shell.craterDepth * 0.6,
         impactPoint: { x: px, y: py, z: pz },
       };
     }
   }
 
-  // 4. Check Ground Terrain + Splash Damage near Opponent Tank
-  const groundY = terrainHeightAt(px, arena);
+  // 4. Check Ground Terrain + Splash Damage near Opponent Tank + Crater Carving
+  const groundY = terrainHeightAt(px, arena, pz);
   if (py <= groundY) {
-    // Check if shell blast radius splashes a nearby tank's tracks
     for (const tank of tanks) {
       if (tank.hp <= 0) continue;
       if (tank.id === shooterId && elapsedTime < 0.25) continue;
@@ -761,6 +795,8 @@ export function evaluatePointCollision(
           targetTankId: tank.id,
           hitZone: 'tracks',
           damage: Math.max(8, splashDmg),
+          craterRadius: shooter.shell.blastRadius,
+          craterDepth: shooter.shell.craterDepth,
           impactPoint: { x: px, y: groundY, z: pz },
         };
       }
@@ -768,6 +804,8 @@ export function evaluatePointCollision(
 
     return {
       hitType: 'ground',
+      craterRadius: shooter.shell.blastRadius,
+      craterDepth: shooter.shell.craterDepth,
       impactPoint: { x: px, y: groundY, z: pz },
     };
   }
@@ -835,7 +873,7 @@ export function simulateFullShot(
         path,
         result: {
           hitType: 'ground',
-          impactPoint: { x: current.x, y: terrainHeightAt(current.x, arena), z: current.z },
+          impactPoint: { x: current.x, y: terrainHeightAt(current.x, arena, current.z), z: current.z },
         },
       };
     }
@@ -845,15 +883,11 @@ export function simulateFullShot(
     path,
     result: {
       hitType: 'ground',
-      impactPoint: { x: current.x, y: terrainHeightAt(current.x, arena), z: current.z },
+      impactPoint: { x: current.x, y: terrainHeightAt(current.x, arena, current.z), z: current.z },
     },
   };
 }
 
-/**
- * Selects the enemy tank model and AI accuracy scaling based on the current stage number
- * and the player's chosen tank so the enemy is comparable at Stage 1 and progressively stronger each stage.
- */
 export function selectEnemyTankForStage(playerTankIndex: number, stageNumber: number): TankModelSpec {
   const targetIndex = Math.min(
     TANK_CATALOG.length - 1,
@@ -862,9 +896,6 @@ export function selectEnemyTankForStage(playerTankIndex: number, stageNumber: nu
   return TANK_CATALOG[targetIndex];
 }
 
-/**
- * Computes AI tank movement (repositioning to dodge) and ballistic cannon shot for the current stage.
- */
 export function computeAITankTurn(
   aiTank: TankCombatState,
   playerTank: TankCombatState,
@@ -881,7 +912,6 @@ export function computeAITankTurn(
 } {
   const rng = seededRandom(seed);
 
-  // 1. Tactical movement: AI moves slightly forward/backward and sideways each turn
   const maxStep = Math.min(aiTank.moveFuel, 2.8);
   const moveDeltaX = Number(((rng() - 0.5) * 2 * maxStep * 0.75).toFixed(2));
   const moveDeltaZ = Number(((rng() - 0.5) * 2 * Math.min(1.6, maxStep * 0.45)).toFixed(2));
@@ -891,7 +921,7 @@ export function computeAITankTurn(
     x: aiTank.x + moveDeltaX,
     z: Math.max(-4.5, Math.min(4.5, aiTank.z + moveDeltaZ)),
   };
-  movedAi.y = terrainHeightAt(movedAi.x, arena);
+  movedAi.y = terrainHeightAt(movedAi.x, arena, movedAi.z);
 
   const turretYawRad = Math.atan2(playerTank.z - movedAi.z, Math.abs(playerTank.x - movedAi.x));
   movedAi.turretYawRad = turretYawRad;
@@ -931,7 +961,6 @@ export function computeAITankTurn(
     }
   }
 
-  // Stage-scaled error: Stage 1 has gentle jitter; higher stages become deadlier
   const accuracyFactor = Math.max(0.18, 1 - (stageNumber - 1) * 0.12);
   const angleJitter = (rng() * 2 - 1) * 5.5 * accuracyFactor;
   const powerJitter = (rng() * 2 - 1) * 7.5 * accuracyFactor;

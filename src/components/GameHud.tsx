@@ -27,7 +27,6 @@ interface GameHudProps {
   onCycleCamera: () => void;
   onToggleMute: () => void;
   onPause: () => void;
-  onOpenApkModal: () => void;
 }
 
 const CAMERA_LABELS: Record<CameraPreset, string> = {
@@ -59,7 +58,6 @@ export const GameHud: React.FC<GameHudProps> = ({
   onCycleCamera,
   onToggleMute,
   onPause,
-  onOpenApkModal,
 }) => {
   const p1 = tanks[0];
   const p2 = tanks[1];
@@ -201,7 +199,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               </button>
             </div>
 
-            {/* Pause, Mute & APK Buttons */}
+            {/* Pause & Mute Buttons */}
             <div className="pointer-events-auto flex items-center gap-1 shrink-0">
               <button
                 type="button"
@@ -233,18 +231,6 @@ export const GameHud: React.FC<GameHudProps> = ({
                     <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
                   </svg>
                 )}
-              </button>
-              <button
-                type="button"
-                aria-label="خروجی APK"
-                onClick={onOpenApkModal}
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg border border-amber-500/40 bg-[#0c1017]/90 flex items-center justify-center text-amber-400 hover:bg-amber-500/20"
-                title="خروجی APK کافه‌بازار و مایکت"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-                  <path d="M12 18h.01" />
-                </svg>
               </button>
             </div>
           </div>

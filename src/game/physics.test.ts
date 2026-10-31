@@ -122,3 +122,25 @@ test('Enemy tank selection and AI ballistic solver scale with stage progression'
   assert.ok(pNext.vx > p0.vx);
   assert.ok(pNext.vy < p0.vy);
 });
+
+test('Dynamic 3D ground craters physically indent terrain elevation at impact coordinates', () => {
+  const arena = generateBattlefieldConfig(404, 1);
+  const impactX = -5.0;
+  const impactZ = 0.5;
+  const baseElevation = terrainHeightAt(impactX, arena, impactZ);
+
+  arena.craters.push({
+    id: 'test-crater-1',
+    x: impactX,
+    z: impactZ,
+    radius: 3.4,
+    depth: 1.05,
+  });
+
+  const craterCenterElevation = terrainHeightAt(impactX, arena, impactZ);
+  assert.ok(
+    craterCenterElevation < baseElevation - 0.9,
+    `Expected crater center (${craterCenterElevation}) to be lower than base elevation (${baseElevation})`
+  );
+});
+
